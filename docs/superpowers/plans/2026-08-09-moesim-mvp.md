@@ -868,7 +868,20 @@ Add to `moesim/scheduler/base.py`:
 
 ```python
 def apply_actions(state: ScheduleState, actions: list[Action]) -> None:
-    """Apply load/unload actions to state. Deterministic; raises on capacity violation."""
+    """Apply load/unload actions to state. Deterministic; raises on capacity violation.
+
+    NOTE: all unloads are applied BEFORE loads (two-pass). This is the
+    post-review fix: the original single-pass load-first version raised
+    ValueError on the swap pattern [load e2, unload e0] because the unload
+    hadn't freed space yet. Policies emit loads-then-unloads, so unload-first
+    is the correct swap semantics.
+    """
+    for action in actions:
+        if action.kind == "unload":
+            for eid in action.expert_ids:
+                if eid in state.resident:
+                    state.resident.remove(eid)
+                    state.used_gpu_mb -= state.profiles[eid].size_mb
     for action in actions:
         if action.kind == "load":
             for eid in action.expert_ids:
@@ -880,12 +893,7 @@ def apply_actions(state: ScheduleState, actions: list[Action]) -> None:
                     )
                 state.resident.add(eid)
                 state.used_gpu_mb += size
-        elif action.kind == "unload":
-            for eid in action.expert_ids:
-                if eid in state.resident:
-                    state.resident.remove(eid)
-                    state.used_gpu_mb -= state.profiles[eid].size_mb
-        # execute_*/evict_kv/fetch_kv are informational at the state layer
+    # execute_*/evict_kv/fetch_kv are informational at the state layer
 ```
 
 ```python
