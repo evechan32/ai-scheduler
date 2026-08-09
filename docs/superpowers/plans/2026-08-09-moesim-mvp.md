@@ -254,6 +254,7 @@ class Simulation:
         while self.queue:
             e = self.queue.pop()
             if until is not None and e.time > until:
+                self.clock.advance(until)
                 break
             self.clock.advance(e.time)
             handler = self._handlers.get(e.kind)
