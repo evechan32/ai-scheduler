@@ -49,3 +49,12 @@ def test_prefetch_hottest():
     policy = CostModelPolicy(pcie=BandwidthResource(bandwidth_gbps=10.0), prefetch_n=1)
     actions = policy.decide(st, 0.0)
     assert Action(kind="load", expert_ids=("e3",)) in actions  # hottest non-resident
+
+
+def test_load_evicts_lru_when_over_capacity():
+    st = _state(resident=("e0", "e1"), used=20.0)  # request e2, needs 10MB, no room
+    st.access_history = ["e1", "e0"]  # e1 most recent, e0 least
+    policy = CostModelPolicy(pcie=BandwidthResource(bandwidth_gbps=10.0), prefetch_n=0)
+    actions = policy.decide(st, 0.0)
+    assert Action(kind="load", expert_ids=("e2",)) in actions
+    assert Action(kind="unload", expert_ids=("e0",)) in actions  # e0 evicted (LRU)
