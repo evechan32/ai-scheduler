@@ -1,3 +1,4 @@
+from moesim.scheduler.base import Action, Scheduler
 from moesim.scheduler.cost_model import ExpertProfile
 from moesim.scheduler.policies.cost_model import CostModelPolicy
 from moesim.scheduler.policies.lru import LRUPolicy
@@ -52,3 +53,35 @@ def test_cost_model_policy_uses_cpu_for_expensive_loads():
     metrics = sim.run(steps=[["e0"], ["e1"]])
     # e0,e1 computed on CPU (3ms each) — no PCIe loads
     assert metrics.total_time_ms == 6.0
+
+
+class StubExecuteScheduler(Scheduler):
+    def decide(self, state, clock):
+        return [
+            Action(kind="load", expert_ids=("e0",)),
+            Action(kind="load", expert_ids=("e1",)),
+            Action(kind="execute_gpu", expert_ids=("e0",)),
+            Action(kind="execute_gpu", expert_ids=("e1",)),
+        ]
+
+
+def test_step_execution_order_is_deterministic_across_runs():
+    # e0/e1 loaded in the same step finish at different times (PCIe serialized),
+    # so GPU start times depend on execution order. The result must be identical
+    # across runs regardless of hash seed — action emission order is preserved.
+    profiles = _profiles(n=2)
+
+    def run_once():
+        sim = MoESimulation(
+            scheduler=StubExecuteScheduler(),
+            profiles=profiles,
+            gpu_capacity_mb=40.0,
+            pcie=BandwidthResource(bandwidth_gbps=10.0),  # 10MB => 1ms, serialized
+            gpu=ComputeResource(concurrency=1, per_unit_ms=1.0),
+        )
+        return sim.run(steps=[["e0", "e1"]]).total_time_ms
+
+    first, second = run_once(), run_once()
+    assert first == second
+    # action order e0,e1: e0 load@1, e1 load@2; e0 GPU done@2, e1 GPU done@3
+    assert first == 3.0

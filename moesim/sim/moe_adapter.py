@@ -47,9 +47,9 @@ class MoESimulation:
         # load completes (serial dependency). Experts with no explicit execute
         # action default to GPU execution (cache-management-only policies like
         # LRU never emit execute actions).
-        cpu_ids = {eid for a in actions if a.kind == "execute_cpu" for eid in a.expert_ids}
-        gpu_ids = {eid for a in actions if a.kind == "execute_gpu" for eid in a.expert_ids}
-        decided = cpu_ids | gpu_ids
+        cpu_ids = [eid for a in actions if a.kind == "execute_cpu" for eid in a.expert_ids]
+        gpu_ids = [eid for a in actions if a.kind == "execute_gpu" for eid in a.expert_ids]
+        decided = set(cpu_ids) | set(gpu_ids)
         default_gpu = [eid for eid in experts if eid not in decided]
 
         # Schedule PCIe loads first; remember each expert's load completion time.
