@@ -29,6 +29,10 @@ class MoESimulation:
         )
         self._metrics = Metrics()
 
+    def feed(self, step_experts: list[str], token_count: int = 1) -> None:
+        """Record one decode step's requested experts and account its time."""
+        self._step(step_experts, token_count)
+
     def run(self, steps: list[list[str]]) -> Metrics:
         for step in steps:
             self._step(step)
@@ -36,7 +40,7 @@ class MoESimulation:
         self._metrics.cache_misses = self._state.cache_misses
         return self._metrics
 
-    def _step(self, experts: list[str]) -> None:
+    def _step(self, experts: list[str], token_count: int = 1) -> None:
         self._state.requested = tuple(experts)
         for eid in experts:
             self._state.mark_access(eid)
@@ -73,6 +77,6 @@ class MoESimulation:
         step_completion = max(completions, default=self._clock)
         step_time = step_completion - self._clock
         self._clock = step_completion
-        # Each step is one decode token (activating multiple experts), so it
-        # contributes exactly 1 to the token count.
-        self._metrics.record_completion(tokens=1, time_ms=step_time)
+        # Each step is one decode step (activating multiple experts); it
+        # contributes token_count (default 1) tokens.
+        self._metrics.record_completion(tokens=token_count, time_ms=step_time)

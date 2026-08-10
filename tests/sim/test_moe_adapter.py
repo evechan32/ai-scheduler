@@ -65,15 +65,28 @@ class StubExecuteScheduler(Scheduler):
         ]
 
 
+class ReverseStubExecuteScheduler(Scheduler):
+    def decide(self, state, clock):
+        return [
+            Action(kind="load", expert_ids=("e1",)),
+            Action(kind="load", expert_ids=("e0",)),
+            Action(kind="execute_gpu", expert_ids=("e1",)),
+            Action(kind="execute_gpu", expert_ids=("e0",)),
+        ]
+
+
 def test_step_execution_order_is_deterministic_across_runs():
-    # e0/e1 loaded in the same step finish at different times (PCIe serialized),
-    # so GPU start times depend on execution order. The result must be identical
-    # across runs regardless of hash seed — action emission order is preserved.
+    # Execution order must follow the scheduler's action emission order, not
+    # Python's hash-seed-dependent set iteration order. A correct impl is
+    # order-invariant: reversing [e0,e1] -> [e1,e0] must not change the result.
+    # Under the buggy set-version this fails for EVERY hash seed: the GPU queue
+    # order decouples from the PCIe load order for at least one of the two
+    # schedulers, so forward and reverse runs always disagree.
     profiles = _profiles(n=2)
 
-    def run_once():
+    def run_once(scheduler):
         sim = MoESimulation(
-            scheduler=StubExecuteScheduler(),
+            scheduler=scheduler,
             profiles=profiles,
             gpu_capacity_mb=40.0,
             pcie=BandwidthResource(bandwidth_gbps=10.0),  # 10MB => 1ms, serialized
@@ -81,7 +94,23 @@ def test_step_execution_order_is_deterministic_across_runs():
         )
         return sim.run(steps=[["e0", "e1"]]).total_time_ms
 
-    first, second = run_once(), run_once()
-    assert first == second
+    forward = run_once(StubExecuteScheduler())
+    reverse = run_once(ReverseStubExecuteScheduler())
+    assert forward == reverse
     # action order e0,e1: e0 load@1, e1 load@2; e0 GPU done@2, e1 GPU done@3
-    assert first == 3.0
+    assert forward == 3.0
+
+
+def test_feed_records_token_count():
+    profiles = _profiles(n=2)
+    sim = MoESimulation(
+        scheduler=LRUPolicy(),
+        profiles=profiles,
+        gpu_capacity_mb=40.0,
+        pcie=BandwidthResource(bandwidth_gbps=10.0),
+        gpu=ComputeResource(concurrency=1, per_unit_ms=1.0),
+    )
+    sim.feed(["e0"], token_count=2)
+    sim.feed(["e1"], token_count=3)
+    assert sim._metrics.total_tokens == 5
+    assert sim._metrics.total_time_ms > 0.0
