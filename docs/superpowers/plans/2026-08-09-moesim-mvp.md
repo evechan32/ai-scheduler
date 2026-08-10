@@ -1674,11 +1674,19 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
 """Self-hosted CPU FP16 expert FFN kernel (torch C++ extension)."""
 from __future__ import annotations
 
+import logging
+
 import torch
+
+logger = logging.getLogger(__name__)
 
 try:  # load the C++ extension once at import
     from torch.utils.cpp_extension import load_inline
 
+    # NOTE: NO PYBIND11_MODULE block in cpp_sources — load_inline auto-generates
+    # the module binding from the `functions` argument. Including one causes
+    # symbol redefinition (PyInit_* defined twice) → build fails → silent
+    # fallback. This was a real bug found post-install (Task 11 review).
     _EXT = load_inline(
         name="moesim_expert_ffn",
         cpp_sources=r'''
@@ -1690,14 +1698,12 @@ torch::Tensor expert_ffn(torch::Tensor x, torch::Tensor w1, torch::Tensor w2) {
   h = at::gelu(h);
   return at::matmul(h, w2.transpose(0, 1));
 }
-PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
-  m.def("expert_ffn", &expert_ffn, "FP16 expert FFN on CPU");
-}
 ''',
         functions=["expert_ffn"],
         verbose=False,
     )
-except Exception:  # pragma: no cover - fallback for envs without compiler
+except Exception as exc:  # pragma: no cover - fallback for envs without compiler
+    logger.warning("C++ extension build failed, using torch fallback: %s", exc)
     _EXT = None
 
 
