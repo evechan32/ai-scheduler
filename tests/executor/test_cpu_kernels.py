@@ -1,7 +1,11 @@
 import pytest
 
 torch = pytest.importorskip("torch")
-from moesim.executor.cpu_kernels import expert_ffn  # noqa: E402
+from moesim.executor.cpu_kernels import _EXT, expert_ffn  # noqa: E402
+
+
+def test_cpp_extension_loaded():
+    assert _EXT is not None
 
 
 def test_expert_ffn_matches_torch_reference():
