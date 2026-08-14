@@ -15,7 +15,11 @@ from moesim.scheduler.cost_model import profiles_from_dicts
 from moesim.sim.sweep import compare_policies
 
 
-def build_trace(num_steps=100, hot=("e0", "e1"), cold=("e250", "e251")):
+def build_trace(profiles, num_steps=100, hot=None, cold=None):
+    if hot is None:
+        hot = sorted(profiles)[:2]
+    if cold is None:
+        cold = sorted(profiles)[-2:]
     trace = []
     for i in range(num_steps):
         if i % 5 == 4:
@@ -37,7 +41,7 @@ def main() -> None:
 
     profiles = profiles_from_dicts(load_profiles(args.profiles))
     pcie_params = json.loads(Path(args.pcie).read_text())
-    trace = build_trace()
+    trace = build_trace(profiles)
 
     print("=== moesim simulation (calibrated) ===")
     results = compare_policies(profiles=profiles, steps=trace,
