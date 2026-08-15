@@ -10,7 +10,10 @@ requires-python = ">=3.10"
 dependencies = ["numpy>=1.24"]
 
 [project.optional-dependencies]
-dev = ["pytest>=7.4", "torch>=2.1", "transformers>=4.40"]
+core = ["numpy>=1.24"]
+executor = ["torch>=2.1", "transformers>=4.40", "accelerate>=0.26"]
+llama-cpp = ["llama-cpp-python>=0.3.0"]
+dev = ["pytest>=7.4", "torch>=2.1", "transformers>=4.40", "accelerate>=0.26"]
 
 [tool.setuptools.packages.find]
 include = ["moesim*"]
