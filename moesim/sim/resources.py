@@ -3,6 +3,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+import numpy as np
+
 
 class BandwidthResource:
     """A serialized transfer channel (e.g., PCIe, DRAM bus)."""
@@ -62,3 +64,17 @@ class StorageResource:
         if size_mb > self.used_mb + 1e-9:
             raise ValueError(f"cannot remove {size_mb}MB from used {self.used_mb}MB")
         self.used_mb -= size_mb
+
+
+class MultiGPUCluster:
+    """Multiple GPU nodes with a pairwise bandwidth matrix (GB/s)."""
+
+    def __init__(self, gpu_capacities_mb: list[float], bandwidth_matrix: np.ndarray) -> None:
+        assert bandwidth_matrix.shape == (len(gpu_capacities_mb),) * 2
+        self.gpu_capacities_mb = list(gpu_capacities_mb)
+        self.bandwidth_matrix = bandwidth_matrix
+
+    def transfer_time_ms(self, src: int, dst: int, size_mb: float) -> float:
+        if src == dst:
+            return 0.0
+        return size_mb / float(self.bandwidth_matrix[src, dst])
