@@ -87,3 +87,38 @@ From spec §8:
 - `vllm` and `llama.cpp` executor backends.
 - RL / imitation-learning policies trained on `sim/` as the environment.
 - Multi-GPU / cluster topology simulation.
+
+## v2 Deliverables (2026-08-15)
+
+- **Real weight offload** — transformers executor `load`/`unload` now move
+  expert parameters GPU<->CPU; `execute_gpu` auto-loads (verified with CUDA).
+- **KV-tier aware policy** — `KVWeightedPolicy` extends the cost model with GPU
+  KV-pool pressure: high pressure forces CPU execution + KV eviction.
+- **INT8 CPU kernel** — `expert_ffn_int8` with per-tensor symmetric
+  quantization (relative error 0.33% vs FP16, well under 5% target).
+- **vllm / llama.cpp backends** — optional-import adapters with duck-typed
+  engine tests.
+- **Real-machine verification protocol** — `benchmarks/e2e/verify_on_real_machine.md`;
+  measured on OLMoE-1B-7B (MoE, 64 experts): simulator validates relative
+  policy ordering (cost_model > lru > activation_freq); full-model absolute
+  TPOT is out of scope (expert layer only).
+
+Remaining v2: INT4 quantization, `accelerate`/`device_map` integration, KV+
+expert joint scheduling in the simulator, real vllm/llama.cpp engine wiring,
+RL policies, multi-GPU topology.
+
+## v3 Deliverables (2026-08-15)
+
+- **Real inference closed loop** — `MoEForwardHook` replaces HF MoE layer
+  forward: router top-k experts go through `scheduler.decide()` for per-expert
+  CPU/GPU placement, executed by the transformers executor. Verified on real
+  OLMoE structure: hook vs original forward relative error **0.0589%** (< 1%).
+  Harness: `benchmarks/e2e/run_hook_inference.py` (auto-falls back to a reduced
+  structural config when the 26G fp32 model OOMs on the 7.6G dev machine).
+- **RL scheduling policy** — `RLScheduler`, numpy-only Q-learning trained inside
+  the simulator (`scheduler/policies/rl.py`), deterministic with fixed seed.
+- **Multi-GPU topology** — `MultiGPUCluster` (per-node capacity + pairwise
+  bandwidth matrix) and per-GPU residency in `ScheduleState`.
+
+Remaining: real vLLM kernel-level integration, production RL training loop,
+multi-GPU real-machine verification, INT4 kernel optimization.

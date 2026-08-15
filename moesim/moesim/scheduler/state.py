@@ -16,6 +16,17 @@ class ScheduleState:
     access_history: list[str] = field(default_factory=list)
     cache_hits: int = 0
     cache_misses: int = 0
+    kv_gpu_mb: float = 0.0
+    kv_host_mb: float = 0.0
+    kv_gpu_capacity_mb: float = 0.0
+    gpu_resident: dict[int, set[str]] = field(default_factory=lambda: {0: set()})
+
+    def __post_init__(self) -> None:
+        # Backward-compatible one-time sync: when per-GPU residency is provided,
+        # reflect GPU 0's set into the legacy `resident` field. This is not a
+        # live view (mutations after construction are not propagated).
+        if self.gpu_resident.get(0):
+            self.resident = set(self.gpu_resident[0])
 
     def mark_access(self, expert_id: str) -> bool:
         self.access_history.append(expert_id)

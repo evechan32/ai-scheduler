@@ -38,7 +38,21 @@ def apply_actions(state: ScheduleState, actions: list[Action]) -> None:
                     )
                 state.resident.add(eid)
                 state.used_gpu_mb += size
-    # execute_*/evict_kv/fetch_kv are informational at the state layer
+    for action in actions:
+        if action.kind == "evict_kv":
+            for eid in action.expert_ids:
+                size = state.profiles[eid].size_mb
+                evict = min(size, state.kv_gpu_mb)
+                state.kv_gpu_mb -= evict
+                state.kv_host_mb += evict
+    for action in actions:
+        if action.kind == "fetch_kv":
+            for eid in action.expert_ids:
+                size = state.profiles[eid].size_mb
+                fetch = min(size, state.kv_host_mb)
+                state.kv_host_mb -= fetch
+                state.kv_gpu_mb += fetch
+    # execute_gpu/execute_cpu are informational at the state layer
 
 
 class Scheduler:
