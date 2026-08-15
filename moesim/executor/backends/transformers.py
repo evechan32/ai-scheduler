@@ -8,29 +8,41 @@ from moesim.executor.cpu_kernels import expert_ffn
 class TransformersMoEExecutor(ExpertExecutor):
     """Wraps a HF-style MoE model (model.experts: ModuleList of FFN modules).
 
-    v1 scope: execute_gpu uses the native expert module; execute_cpu routes the
-    same weights through the CPU kernel. Weight offloading (load/unload moving
-    parameters between devices) is a v2 item — v1 keeps all weights in place and
-    only demonstrates the routing path.
+    load/unload move expert parameters between GPU and CPU for real
+    (v2: weight offloading). execute_gpu auto-loads; execute_cpu runs the
+    weights on CPU via the moesim CPU kernel.
     """
 
-    def __init__(self, model) -> None:
+    def __init__(self, model, device: str = "cuda") -> None:
         self.model = model
+        self.device = device
+        self.residency: dict[str, str] = {}
 
     def _expert_module(self, expert_id: str):
         return self.model.experts[int(expert_id)]
 
+    def _to(self, module, target: str) -> None:
+        module.to(target)
+
     def load(self, expert_ids: list[str]) -> None:
-        pass  # v1: weights are always resident; see docstring
+        for eid in expert_ids:
+            self._to(self._expert_module(eid), self.device)
+            self.residency[eid] = self.device
 
     def unload(self, expert_ids: list[str]) -> None:
-        pass  # v1: see docstring
+        for eid in expert_ids:
+            self._to(self._expert_module(eid), "cpu")
+            self.residency[eid] = "cpu"
 
     def execute_gpu(self, expert_id: str, hidden_states) -> object:
-        return self._expert_module(expert_id)(hidden_states)
+        if self.residency.get(expert_id) != self.device:
+            self.load([expert_id])
+        return self._expert_module(expert_id)(hidden_states.to(self.device))
 
     def execute_cpu(self, expert_id: str, hidden_states) -> object:
         module = self._expert_module(expert_id)
+        if self.residency.get(expert_id) != "cpu":
+            self.unload([expert_id])
         w1 = module.w1.weight.detach()
         w2 = module.w2.weight.detach()
         return expert_ffn(hidden_states, w1, w2)
