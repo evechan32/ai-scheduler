@@ -13,16 +13,33 @@ class TransformersMoEExecutor(ExpertExecutor):
     weights on CPU via the moesim CPU kernel.
     """
 
-    def __init__(self, model, device: str = "cuda") -> None:
+    def __init__(self, model, device: str = "cuda", use_accelerate: bool = False) -> None:
         self.model = model
         self.device = device
         self.residency: dict[str, str] = {}
+        self.uses_accelerate = use_accelerate
+        if use_accelerate:
+            try:
+                import accelerate  # noqa: F401
+            except ImportError as exc:
+                raise ImportError(
+                    "use_accelerate=True requires the 'accelerate' package. "
+                    "Install it with: pip install accelerate"
+                ) from exc
 
     def _expert_module(self, expert_id: str):
         return self.model.experts[int(expert_id)]
 
     def _to(self, module, target: str) -> None:
-        module.to(target)
+        if self.uses_accelerate:
+            from accelerate.utils import set_module_tensor_to_device
+
+            for name in [n for n, _ in module.named_parameters()]:
+                set_module_tensor_to_device(module, name, target)
+            for name in [n for n, _ in module.named_buffers()]:
+                set_module_tensor_to_device(module, name, target)
+        else:
+            module.to(target)
 
     def load(self, expert_ids: list[str]) -> None:
         for eid in expert_ids:
