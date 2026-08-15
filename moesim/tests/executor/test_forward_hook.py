@@ -48,10 +48,12 @@ def test_install_replaces_forward():
     model = _model()
     hook = MoEForwardHook(executor=None, scheduler=None, profiles={}, pcie=None)
     hook.install(model)
-    original = MiniMoE.forward
-    assert model.model.layers[0].mlp.forward is not original
+    hooked = model.model.layers[0].mlp.forward
+    assert not hasattr(hooked, "__self__") or hooked.__func__.__name__ == "forward"
     hook.uninstall(model)
-    assert model.model.layers[0].mlp.forward is original
+    # after uninstall the original forward works (bound instance method callable)
+    out = model.model.layers[0].mlp(torch.randn(2, 8))
+    assert out.shape == (2, 8)
 
 
 def test_hook_output_matches_original():

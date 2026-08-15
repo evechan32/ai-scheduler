@@ -1,6 +1,8 @@
 """Transformers backend adapter: route expert FFNs through the executor abstraction."""
 from __future__ import annotations
 
+import torch
+
 from moesim.executor.base import ExpertExecutor
 from moesim.executor.cpu_kernels import expert_ffn
 
@@ -60,6 +62,15 @@ class TransformersMoEExecutor(ExpertExecutor):
         module = self._expert_module(expert_id)
         if self.residency.get(expert_id) != "cpu":
             self.unload([expert_id])
-        w1 = module.w1.weight.detach()
-        w2 = module.w2.weight.detach()
-        return expert_ffn(hidden_states, w1, w2)
+        hidden_states = hidden_states.to("cpu")
+        if hasattr(module, "w1"):  # simple 2-layer expert (mini-MoE test models)
+            w1 = module.w1.weight.detach()
+            w2 = module.w2.weight.detach()
+            return expert_ffn(hidden_states, w1, w2)
+        # real OlmoeMLP: gate_proj/up_proj -> SiLU -> down_proj
+        gate = module.gate_proj.weight.detach()
+        up = module.up_proj.weight.detach()
+        down = module.down_proj.weight.detach()
+        hidden = hidden_states @ gate.t()  # [N, intermediate]
+        hidden = torch.nn.functional.silu(hidden) * (hidden_states @ up.t())
+        return hidden @ down.t()

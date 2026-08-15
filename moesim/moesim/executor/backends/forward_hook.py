@@ -29,7 +29,7 @@ class MoEForwardHook:
         for idx, layer in enumerate(model.model.layers):
             mlp = getattr(layer, "mlp", None)
             if mlp is not None and hasattr(mlp, "experts") and hasattr(mlp, "gate"):
-                self._originals[idx] = type(mlp).forward
+                self._originals[idx] = mlp.forward
                 mlp.forward = self._make_forward(idx, mlp)
 
     def uninstall(self, model) -> None:
@@ -80,6 +80,7 @@ class MoEForwardHook:
                     expert_out = self.executor.execute_gpu(i_str, tokens)
                 else:
                     expert_out = mlp.experts[i](tokens)
+            expert_out = expert_out.to(self.device)  # CPU experts return CPU tensors
             # weights for tokens routed to this expert: top_weights[token, k] where top_idx==i
             pos = (top_idx == i).float()  # [N, top_k]
             per_token_w = (top_weights * pos).sum(dim=-1)[token_mask]  # [n_routed]
@@ -116,6 +117,7 @@ class MoEForwardHook:
                     expert_out = self.executor.execute_gpu(eid, hidden_states)
                 else:
                     expert_out = mlp.experts[i](hidden_states)
+            expert_out = expert_out.to(self.device)
             out = out + weight * expert_out.to(hidden_states.dtype)
         return out
 
@@ -123,6 +125,19 @@ class MoEForwardHook:
         def forward(hidden_states, **kwargs):
             if self.executor is not None:
                 self.executor.model = mlp
+                # Sync residency to THIS layer's actual expert placement.
+                # residency is shared across layers, so without this, decide()
+                # may see layer-0 placement and wrongly treat layer-1 experts
+                # as resident (cross-layer stale-state bug in mixed execution).
+                if self.executor.residency:
+                    for eid in list(self.executor.residency):
+                        i = int(eid)
+                        if i < len(mlp.experts):
+                            params = list(mlp.experts[i].parameters())
+                            if params:
+                                actual = params[0].device.type
+                                if actual != self.executor.residency[eid]:
+                                    self.executor.residency[eid] = actual
             hidden_states = hidden_states.to(self.device)
             if hidden_states.dim() == 3:
                 return self._forward_3d(mlp, hidden_states)
