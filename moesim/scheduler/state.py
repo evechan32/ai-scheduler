@@ -16,6 +16,9 @@ class ScheduleState:
     access_history: list[str] = field(default_factory=list)
     cache_hits: int = 0
     cache_misses: int = 0
+    kv_gpu_mb: float = 0.0
+    kv_host_mb: float = 0.0
+    kv_gpu_capacity_mb: float = 0.0
 
     def mark_access(self, expert_id: str) -> bool:
         self.access_history.append(expert_id)
