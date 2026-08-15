@@ -80,6 +80,7 @@ class MoEForwardHook:
                     expert_out = self.executor.execute_gpu(i_str, tokens)
                 else:
                     expert_out = mlp.experts[i](tokens)
+            expert_out = expert_out.to(self.device)  # CPU experts return CPU tensors
             # weights for tokens routed to this expert: top_weights[token, k] where top_idx==i
             pos = (top_idx == i).float()  # [N, top_k]
             per_token_w = (top_weights * pos).sum(dim=-1)[token_mask]  # [n_routed]
@@ -116,6 +117,7 @@ class MoEForwardHook:
                     expert_out = self.executor.execute_gpu(eid, hidden_states)
                 else:
                     expert_out = mlp.experts[i](hidden_states)
+            expert_out = expert_out.to(self.device)
             out = out + weight * expert_out.to(hidden_states.dtype)
         return out
 
