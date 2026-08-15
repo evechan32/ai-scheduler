@@ -34,3 +34,15 @@ class KVTierManager:
         gpu_freed = min(mb, self.gpu_used_mb)
         self.gpu_used_mb -= gpu_freed
         self.host_used_mb -= mb - gpu_freed
+
+    def total_kv_mb(self) -> float:
+        return self.gpu_used_mb + self.host_used_mb
+
+    def pressure(self) -> float:
+        return self.gpu_used_mb / self.gpu_pool_mb
+
+    def transfer_host_to_gpu(self, mb: float) -> None:
+        if mb > self.host_used_mb + 1e-9:
+            raise ValueError(f"cannot transfer {mb}MB, only {self.host_used_mb}MB on host")
+        self.host_used_mb -= mb
+        self.gpu_used_mb += mb
