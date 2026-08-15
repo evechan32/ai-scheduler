@@ -74,6 +74,18 @@ class MoESimulation:
                 raise RuntimeError("execute_cpu requested but no CPU resource configured")
             completions.append(self.cpu.schedule(self._clock, self.profiles[eid].cpu_exec_ms))
 
+        # KV evict/fetch transfers run over PCIe concurrently with expert loads.
+        kv_times: list[float] = []
+        for action in actions:
+            if action.kind == "evict_kv":
+                for eid in action.expert_ids:
+                    kv_times.append(self.pcie.reserve(self._clock, self.profiles[eid].size_mb))
+            elif action.kind == "fetch_kv":
+                for eid in action.expert_ids:
+                    kv_times.append(self.pcie.reserve(self._clock, self.profiles[eid].size_mb))
+        # include KV transfer completions in the step's completion time
+        completions.extend(kv_times)
+
         step_completion = max(completions, default=self._clock)
         step_time = step_completion - self._clock
         self._clock = step_completion
