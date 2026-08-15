@@ -1,6 +1,8 @@
 """MoE forward hook: replace HF MoE layer forward with scheduler-driven execution."""
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
+
 import torch
 
 from moesim.scheduler.state import ScheduleState
@@ -15,15 +17,24 @@ class MoEForwardHook:
       routes per-token top-k, returns the HF contract tuple (hidden, router_logits).
     - 2D input [tokens, hidden] (mini-MoE test models): keeps the legacy
       all-expert sum and returns a single tensor, matching the simple test model.
+
+    Experts run CONCURRENTLY (CPU experts and GPU experts in parallel): GPU
+    kernels launch asynchronously on the current CUDA stream; CPU experts run
+    in a thread pool via the CPU kernel. The final merge waits for all experts.
     """
 
-    def __init__(self, executor, scheduler, profiles, pcie, device: str = "cuda") -> None:
+    def __init__(self, executor, scheduler, profiles, pcie, device: str = "cuda",
+                 parallel: bool = True) -> None:
         self.executor = executor
         self.scheduler = scheduler
         self.profiles = profiles
         self.pcie = pcie
         self.device = device
+        self.parallel = parallel
+        self._pool = ThreadPoolExecutor(max_workers=8) if parallel else None
         self._originals: dict[int, object] = {}
+        self._in_forward = False
+        self.decision_cache: dict[tuple, frozenset] = {}
 
     def install(self, model) -> None:
         for idx, layer in enumerate(model.model.layers):
@@ -61,15 +72,17 @@ class MoEForwardHook:
         actions = self.scheduler.decide(state, 0.0) if self.scheduler else []
 
         final = torch.zeros_like(flat)
-        for i_str in requested:
+
+        def run_expert(i_str: str):
+            """Execute one expert (CPU or GPU) for its routed tokens; returns
+            (token_mask_indices, weighted_out) to merge into final."""
             i = int(i_str)
             use_cpu = any(
                 a.kind == "execute_cpu" and i_str in a.expert_ids for a in actions
             )
-            # tokens routed to this expert
             token_mask = (top_idx == i).any(dim=-1)  # [N]
             if not token_mask.any():
-                continue
+                return None
             tokens = flat[token_mask]
             if use_cpu and self.executor:
                 expert_out = self.executor.execute_cpu(i_str, tokens)
@@ -81,10 +94,23 @@ class MoEForwardHook:
                 else:
                     expert_out = mlp.experts[i](tokens)
             expert_out = expert_out.to(self.device)  # CPU experts return CPU tensors
-            # weights for tokens routed to this expert: top_weights[token, k] where top_idx==i
             pos = (top_idx == i).float()  # [N, top_k]
             per_token_w = (top_weights * pos).sum(dim=-1)[token_mask]  # [n_routed]
-            final[token_mask] += per_token_w.unsqueeze(-1) * expert_out.to(flat.dtype)
+            return token_mask, per_token_w.unsqueeze(-1) * expert_out.to(flat.dtype)
+
+        if self.parallel and len(requested) > 1:
+            futures = [self._pool.submit(run_expert, i_str) for i_str in requested]
+            for fut in futures:
+                res = fut.result()
+                if res is not None:
+                    token_mask, contrib = res
+                    final[token_mask] += contrib
+        else:
+            for i_str in requested:
+                res = run_expert(i_str)
+                if res is not None:
+                    token_mask, contrib = res
+                    final[token_mask] += contrib
 
         final = final.view(batch_size, seq_len, hidden_dim)
         return final, router_logits
@@ -104,7 +130,8 @@ class MoEForwardHook:
         actions = self.scheduler.decide(state, 0.0) if self.scheduler else []
 
         out = torch.zeros_like(hidden_states)
-        for eid in sorted(set(requested)):
+
+        def run_expert(eid: str):
             i = int(eid)
             weight = weights[:, i : i + 1]
             use_cpu = any(a.kind == "execute_cpu" and eid in a.expert_ids for a in actions)
@@ -118,7 +145,15 @@ class MoEForwardHook:
                 else:
                     expert_out = mlp.experts[i](hidden_states)
             expert_out = expert_out.to(self.device)
-            out = out + weight * expert_out.to(hidden_states.dtype)
+            return weight * expert_out.to(hidden_states.dtype)
+
+        if self.parallel and len(set(requested)) > 1:
+            futures = [self._pool.submit(run_expert, eid) for eid in sorted(set(requested))]
+            for fut in futures:
+                out = out + fut.result()
+        else:
+            for eid in sorted(set(requested)):
+                out = out + run_expert(eid)
         return out
 
     def _make_forward(self, layer_idx: int, mlp):
