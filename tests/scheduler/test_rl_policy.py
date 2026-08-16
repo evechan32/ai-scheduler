@@ -53,3 +53,25 @@ def test_rl_deterministic_with_fixed_seed():
     b = RLScheduler()
     b.train(_sim(b), episodes=30, trace=trace)
     assert a.q_table == b.q_table
+
+
+def test_pg_training_updates_theta():
+    np.random.seed(0)
+    from moesim.scheduler.policies.rl import RLPolicyGradientScheduler
+    sched = RLPolicyGradientScheduler(n_experts=4)
+    trace = [["e0", "e1"]] * 30
+    sched.train(_sim(sched), episodes=50, trace=trace)
+    assert sched.theta is not None
+    # 训练后 theta 应有非零梯度更新
+    assert np.abs(sched.theta).sum() > 0
+
+
+def test_pg_deterministic_seed():
+    np.random.seed(3)
+    from moesim.scheduler.policies.rl import RLPolicyGradientScheduler
+    a = RLPolicyGradientScheduler(n_experts=4)
+    a.train(_sim(a), episodes=20, trace=[["e0", "e1"]] * 10)
+    np.random.seed(3)
+    b = RLPolicyGradientScheduler(n_experts=4)
+    b.train(_sim(b), episodes=20, trace=[["e0", "e1"]] * 10)
+    assert np.allclose(a.theta, b.theta)
