@@ -203,3 +203,26 @@ python benchmarks/microbench/measure_expert_time.py
 - INT4 gemm 相对误差 <10%（含激活 int8 量化 + 权重解包）
 
 **v4 优化方向依据**（论文综述映射）：APEX 异步并行、Dovetail CPU/GPU 投机分工、QuantMoE-Bench 量化、TriMoE 三路异构。
+
+## 10. 模型量化进 GPU（2026-08-16）
+
+### 为什么模型原本进不了 GPU
+- OLMoE-1B-7B safetensors 是 **fp32 权重 26G**，fp16 加载仍需 ~13G
+- 本机 GPU 仅 **8G（RTX 5070 Laptop）**，RAM 仅 7.6G
+- 之前实测：26G fp32 读取 → 加载超时/OOM（swap thrash）
+
+### 量化方案（已验证 ✅）
+- **bitsandbytes NF4 4-bit 量化**：`load_in_4bit=True + device_map='auto'`
+- 权重压缩至 ~4G，**成功放入 GPU**：显存 6510 MiB（8G 的 80%）
+- 真实模型 GPU 推理：**362.8ms / forward**（5 token 前向）
+- 加载耗时 304s（读 26G fp32 + 量化转换）
+
+### 性能对比（OLMoE-1B-7B）
+| 路径 | 性能 |
+|---|---|
+| llama.cpp CPU（Q3_K_L GGUF）| 28 tok/s（短上下文）|
+| **transformers + NF4 4-bit GPU** | **362.8ms/forward**（真实模型进 GPU）|
+
+### 意义
+真实模型（64 专家 MoE）终于能在本机 GPU 上运行——结合 MoEForwardHook，
+现在可以实测 CPU+GPU 混合执行对**真实量化模型**的性能（此前只能用结构等价小模型）。
