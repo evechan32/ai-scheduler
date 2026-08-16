@@ -185,3 +185,21 @@ python benchmarks/microbench/measure_expert_time.py
 - 多 GPU 真机验证（当前仅模拟层）
 - INT4 kernel 优化（当前为精度优先反量化路径）
 - 调度决策开销优化（决策缓存/批量调度，缩小与 HF 原生的差距）
+
+## 9. v4 增强（2026-08-16，75 测试）
+
+| 提交 | 内容 |
+|---|---|
+| e3787a1 | 决策缓存——单 forward 内 decide 复用（减少调度开销） |
+| eae3955 | **真并行执行**——线程池并发 CPU/GPU 专家（混合 22.12ms，全 GPU 21.85ms） |
+| 9aa3e0c | 一键安装脚本 install.sh + pyproject extras + 中文 README |
+| 529a472 | MoE 推理优化论文综述（docs/research/，50+ 篇） |
+| 3e10c1a | REINFORCE 策略梯度调度器（生产级 RL，替代 Q-learning） |
+| d61a835 | INT4 kernel 真 int8 gemm（torch._int_mm，含 CPU/CUDA 回退） |
+
+**v4 性能实测（统一小模型，30 次平均）：**
+- 混合串行 23.89ms → 混合真并行 **22.12ms**
+- 全 GPU 串行 34.84ms → 全 GPU 真并行 **21.85ms**
+- INT4 gemm 相对误差 <10%（含激活 int8 量化 + 权重解包）
+
+**v4 优化方向依据**（论文综述映射）：APEX 异步并行、Dovetail CPU/GPU 投机分工、QuantMoE-Bench 量化、TriMoE 三路异构。

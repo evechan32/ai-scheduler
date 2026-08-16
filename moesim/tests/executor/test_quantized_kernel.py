@@ -5,6 +5,7 @@ torch = pytest.importorskip("torch")
 
 from moesim.executor.cpu_kernels.quantized import (  # noqa: E402
     expert_ffn_int4,
+    expert_ffn_int4_gemm,
     expert_ffn_int8,
     _quantize_int4,
 )
@@ -80,3 +81,15 @@ def test_int4_deterministic():
     a = expert_ffn_int4(x, w1, w2)
     b = expert_ffn_int4(x, w1, w2)
     assert torch.equal(a, b)
+
+
+def test_int4_gemm_close_to_fp16():
+    torch.manual_seed(6)
+    x = torch.randn(2, 16, dtype=torch.float16)
+    w1 = torch.randn(32, 16, dtype=torch.float16) - 0.5
+    w2 = torch.randn(16, 32, dtype=torch.float16) - 0.5
+    ref = torch.nn.functional.gelu(x @ w1.t()) @ w2.t()
+    out = expert_ffn_int4_gemm(x, w1, w2)
+    assert out.shape == ref.shape
+    rel = (out.float() - ref.float()).abs().mean() / ref.float().abs().mean()
+    assert rel < 0.10, f"rel err {rel:.4f}"
