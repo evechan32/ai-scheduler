@@ -14,7 +14,7 @@ def _profiles(n=4, size_mb=10.0):
     }
 
 
-def test_compare_policies_returns_all_three():
+def test_compare_policies_returns_all_four():
     steps = [["e0", "e1"], ["e0", "e1"], ["e0", "e1"], ["e2", "e3"]]
     results = compare_policies(
         profiles=_profiles(),
@@ -22,6 +22,6 @@ def test_compare_policies_returns_all_three():
         pcie_params={"bandwidth_gbps": 10.0},
         gpu_capacity_mb=20.0,
     )
-    assert set(results.keys()) == {"lru", "activation_freq", "cost_model"}
+    assert set(results.keys()) == {"lru", "activation_freq", "cost_model", "residency"}
     for metrics in results.values():
         assert metrics.total_tokens == 4

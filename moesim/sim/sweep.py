@@ -8,6 +8,7 @@ from moesim.scheduler.cost_model import ExpertProfile
 from moesim.scheduler.policies.activation_freq import ActivationFreqPolicy
 from moesim.scheduler.policies.cost_model import CostModelPolicy
 from moesim.scheduler.policies.lru import LRUPolicy
+from moesim.scheduler.policies.residency import ResidencyAwarePolicy
 from moesim.sim.metrics import Metrics
 from moesim.sim.moe_adapter import MoESimulation
 from moesim.sim.resources import BandwidthResource, ComputeResource
@@ -43,6 +44,7 @@ def compare_policies(
         "lru": LRUPolicy(),
         "activation_freq": ActivationFreqPolicy(),
         "cost_model": CostModelPolicy(pcie=pcie, prefetch_n=1),
+        "residency": ResidencyAwarePolicy(pcie=pcie),
     }
     return {
         name: sweep(policy, profiles, steps, pcie_params, gpu_capacity_mb)

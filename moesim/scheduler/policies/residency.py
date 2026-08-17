@@ -30,17 +30,17 @@ class ResidencyAwarePolicy(Scheduler):
         actions: list[Action] = []
         for eid in state.requested:
             profile = state.profiles[eid]
+            load_cost = self.pcie.transfer_time_ms(profile.size_mb)
+            gpu_eff = profile.gpu_exec_ms * (1.0 + self._gpu_contention(state))
+            cpu_eff = profile.cpu_exec_ms * (1.0 + self._cpu_contention(state))
+
             if eid in state.resident:
-                # 稳定性：驻留专家留在 GPU（除非 CPU 几乎空闲且 GPU 严重排队）
-                if self._gpu_contention(state) > 1.5 and self._cpu_contention(state) < 0.25:
+                # 稳定性：驻留专家留在 GPU，除非 GPU 排队严重且 CPU 实际更便宜
+                if self._gpu_contention(state) > 1.5 and cpu_eff < gpu_eff:
                     actions.append(Action(kind="execute_cpu", expert_ids=(eid,)))
                 else:
                     actions.append(Action(kind="execute_gpu", expert_ids=(eid,)))
                 continue
-
-            load_cost = self.pcie.transfer_time_ms(profile.size_mb)
-            gpu_eff = profile.gpu_exec_ms * (1.0 + self._gpu_contention(state))
-            cpu_eff = profile.cpu_exec_ms * (1.0 + self._cpu_contention(state))
 
             # 排队感知：GPU 严重排队且 CPU 几乎空闲 → 直接走 CPU（非驻留同样适用）
             if self._gpu_contention(state) > 1.5 and self._cpu_contention(state) < 0.25:
