@@ -203,3 +203,54 @@ python benchmarks/microbench/measure_expert_time.py
 - INT4 gemm 相对误差 <10%（含激活 int8 量化 + 权重解包）
 
 **v4 优化方向依据**（论文综述映射）：APEX 异步并行、Dovetail CPU/GPU 投机分工、QuantMoE-Bench 量化、TriMoE 三路异构。
+
+## 10. 模型量化进 GPU（2026-08-16）
+
+### 为什么模型原本进不了 GPU
+- OLMoE-1B-7B safetensors 是 **fp32 权重 26G**，fp16 加载仍需 ~13G
+- 本机 GPU 仅 **8G（RTX 5070 Laptop）**，RAM 仅 7.6G
+- 之前实测：26G fp32 读取 → 加载超时/OOM（swap thrash）
+
+### 量化方案（已验证 ✅）
+- **bitsandbytes NF4 4-bit 量化**：`load_in_4bit=True + device_map='auto'`
+- 权重压缩至 ~4G，**成功放入 GPU**：显存 6510 MiB（8G 的 80%）
+- 真实模型 GPU 推理：**362.8ms / forward**（5 token 前向）
+- 加载耗时 304s（读 26G fp32 + 量化转换）
+
+### 性能对比（OLMoE-1B-7B）
+| 路径 | 性能 |
+|---|---|
+| llama.cpp CPU（Q3_K_L GGUF）| 28 tok/s（短上下文）|
+| **transformers + NF4 4-bit GPU** | **362.8ms/forward**（真实模型进 GPU）|
+
+### 意义
+真实模型（64 专家 MoE）终于能在本机 GPU 上运行——结合 MoEForwardHook，
+现在可以实测 CPU+GPU 混合执行对**真实量化模型**的性能（此前只能用结构等价小模型）。
+
+## 11. vLLM 框架测试记录（2026-08-16）
+
+### 测试目标
+用 vLLM 加载 OLMoE-1B-7B 做框架对比（vs llama.cpp / transformers / moesim hook）。
+
+### 遇到的限制（如实记录）
+1. **vLLM 0.13 预编译 wheel 不支持 SM 12.0**（RTX 5070 消费级 Blackwell）：
+   `No supported CUDA architectures found for major versions [12]` —— 官方 wheel 只含数据中心 Blackwell kernel，消费级 RTX 50 系列需从源码编译（vLLM PR #38412 确认）。
+2. **bitsandbytes 量化路径形状不兼容**：OLMoE 的 NF4 展平权重 `(1048576,1) != (2048,1024)`，vLLM 0.13 不支持。
+3. **transformers 4.57 GGUF 转换器不支持 olmoe 架构**（GGUF_SUPPORTED_ARCHITECTURES 无 olmoe）。
+4. **源码编译受阻于 GitHub 网络**：vLLM 构建需从 GitHub 克隆多个依赖（cutlass/triton/flash-attention/ComputeLibrary/oneDNN），本机 github.com:443 持续超时。CUTLASS 已用 `VLLM_CUTLASS_SRC_DIR` 官方变量绕过（flashinfer 自带 4.5.0），但 triton 等后续依赖同样卡克隆。
+
+### 最终框架对比（本机可测的）
+| 框架 | 加载方式 | 性能 |
+|---|---|---|
+| llama.cpp | Q3_K_L GGUF, CPU | 28 tok/s（短上下文） |
+| transformers | NF4 4-bit bitsandbytes, GPU | 362.8ms/forward（真实模型进 GPU） |
+| moesim hook | 混合执行（小模型验证） | 22.12ms/forward，误差 0.062% |
+| vLLM | ❌ SM12 + GitHub 克隆双重限制 | 待代理后重试 |
+
+### 复测所需（待用户执行）
+从源码编译 vLLM 需先克隆到本机（绕过 GitHub 443）：
+- nvidia/cutlass v4.4.2（CUTLASS，flashinfer 4.5.0 可替代）
+- triton-lang/triton（triton_kernels）
+- vllm-project/flash-attention
+- ARM-software/ComputeLibrary（仅 ARM 构建需要）
+- oneapi-src/oneDNN（仅 x86 可选）

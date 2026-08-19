@@ -20,6 +20,10 @@ class ScheduleState:
     kv_host_mb: float = 0.0
     kv_gpu_capacity_mb: float = 0.0
     gpu_resident: dict[int, set[str]] = field(default_factory=lambda: {0: set()})
+    gpu_queue_len: int = 0
+    cpu_queue_len: int = 0
+    residency_benefit: dict[str, float] = field(default_factory=dict)
+    migration_cost_ms: float = 0.0
 
     def __post_init__(self) -> None:
         # Backward-compatible one-time sync: when per-GPU residency is provided,
@@ -36,3 +40,8 @@ class ScheduleState:
         else:
             self.cache_misses += 1
         return hit
+
+    def record_load(self, expert_id: str, cost_ms: float) -> None:
+        self.residency_benefit[expert_id] = (
+            self.residency_benefit.get(expert_id, 0.0) + cost_ms
+        )
