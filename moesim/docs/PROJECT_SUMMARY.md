@@ -1,6 +1,6 @@
 # moesim — 异构 MoE 调度框架完整文档
 
-> 项目状态：**v1 + v2 + v3 全部完成** | 71/71 测试通过 | PR #1/#2 已合并至 main
+> 项目状态：**v1-v6 全部完成** | 107/107 测试通过（3 skipped，1 INT4 环境性失败） | PR #1/#2 已合并
 > 本文档汇总全部实现、设计决策、性能实测数据与运行方式。
 
 ---
@@ -20,7 +20,9 @@
 │  调度层 scheduler/  (numpy-only)                           │
 │    decide(state, clock) -> [Action]                        │
 │    策略: cost_model / activation_freq / lru / kv_aware / rl│
-│    状态: ScheduleState (residency, KV tier, per-GPU)       │
+│          / residency / overlap(EFT+prefetch)               │
+│    状态: ScheduleState (residency, KV tier, per-GPU,       │
+│          队列/利用率反馈, pending_loads)                    │
 ├────────────────────────────────────────────────────────────┤
 │  模拟层 sim/  (numpy-only, 领域无关)                       │
 │    core (DES) / resources (带宽/算力/存储/多GPU)           │
@@ -203,6 +205,39 @@ python benchmarks/microbench/measure_expert_time.py
 - INT4 gemm 相对误差 <10%（含激活 int8 量化 + 权重解包）
 
 **v4 优化方向依据**（论文综述映射）：APEX 异步并行、Dovetail CPU/GPU 投机分工、QuantMoE-Bench 量化、TriMoE 三路异构。
+
+## 10. v6 增强（2026-08-20，排队与重叠感知调度，107 测试）
+
+针对用户要求的四个方向：**排队影响 / CPU 资源影响 / 通算并行 / 重叠性**。
+
+| 模块 | 交付 |
+|---|---|
+| `sim/resources.py` | 队列可见性：`queue_depth()` / `utilization()` / `wait_time_ms()`（peek 不污染状态） |
+| `sim/metrics.py` | 队列深度均值/最大、PCIe/GPU/CPU 利用率、transfer_wait、hidden_transfer、prefetch_count、overlap_ratio |
+| `scheduler/base.py` | 新增 `prefetch` Action |
+| `scheduler/state.py` | 资源反馈字段：pcie_queue_len、利用率、等待时间估计、pending_loads（在途传输表） |
+| `scheduler/policies/overlap.py` | **OverlapAwarePolicy**：HEFT 式 EFT 放置（排队+CPU 影响入决策）+ 带宽门控预取 |
+| `sim/moe_adapter.py` | prefetch 与计算重叠（不进关键路径）；在途传输跨步复用；执行等待在途完成 |
+| `scheduler/policies/residency.py` | 修复：load 容量检查缺失（超容量回退 CPU） |
+| `benchmarks/e2e/compare_queue_overlap.py` | 排队/重叠对比基准 |
+
+**v6 模拟实测（热专家 trace，200 步，100MB 专家，PCIe 8GB/s）：**
+
+| 策略 | TPOT | 吞吐 | 命中率 | overlap | 说明 |
+|---|---|---|---|---|---|
+| lru | 2.475ms | 404.0 tok/s | 0.980 | 0.0 | 基线 |
+| cost_model | 2.455ms | 407.3 tok/s | 0.998 | 0.0 | |
+| residency | 4.800ms | 208.3 tok/s | 0.000 | 0.0 | 全部 CPU（12.5ms load > 4ms CPU） |
+| **overlap(pf=2)** | **2.368ms** | **422.4 tok/s** | 0.945 | **1.0** | 🏆 预取重叠 |
+
+**结论**：预取重叠把热专家在后台搬进 GPU，执行从 CPU（4ms）迁到 GPU（1ms），
+比全 CPU 放置快 **50.7%**；PCIe 拥塞（2GB/s）时预取门控（队列深度/利用率阈值）
+限制后台流量，仍优于不预取（3.95 vs 4.80ms）。
+
+**v6 设计依据**（`docs/research/2026-08-20-queue-overlap-heterogeneous-survey.md`）：
+Kairos（排队占 P95 TTFT 77-98%）、HEFT（EFT 决策范式）、Mooncake（排队感知调度）、
+KTransformers（异步 CPU-GPU 任务 + Expert Deferral）、APEX（重叠机制）、
+MoE-Infinity（激活感知预取 + 带宽串行化）、llama.cpp（CPU offload V 曲线）。
 
 ## 10. 模型量化进 GPU（2026-08-16）
 

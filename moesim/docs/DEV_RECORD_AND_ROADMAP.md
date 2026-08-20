@@ -1,6 +1,6 @@
 # moesim 开发记录与待实现清单
 
-> 更新：2026-08-17 | 测试：82/82 通过 | 分支：feat/moesim-v5（源码）、docs/full-record（本仓库）
+> 更新：2026-08-20 | 测试：107/107 通过（3 skipped，1 INT4 环境性失败）| 分支：feat/moesim-v6-queue-overlap
 > 本文档汇总全部开发历史、当前状态、待实现项，作为项目权威记录。
 
 ---
@@ -41,10 +41,22 @@
 - INT4 gemm（torch._int_mm）
 - 一键安装 install.sh + 中文 README
 
-### v5 — 调度器增强（82 测试）✅【当前版本】
+### v5 — 调度器增强（82 测试）✅
 针对 4 个真实缺陷：GPU 排队感知、CPU 资源感知、迁移成本 + 驻留收益、驻留稳定性
 - **ResidencyAwarePolicy** 实测：热专家场景比 cost_model 快 46.9%
   （0.221ms vs 0.416ms，吞吐 4525 vs 2404 tok/s）
+
+### v6 — 排队与重叠感知调度（107 测试）✅【当前版本】
+针对用户要求：排队影响 / CPU 资源影响 / 通算并行 / 重叠性
+- **OverlapAwarePolicy**：HEFT 式 EFT 放置（`EFT = 队列等待 + 执行时间`，CPU 资源
+  影响经 cpu_wait/contention 计入）+ 带宽门控预取（PCIe 拥塞不预取）
+- **prefetch 重叠**：预取传输与当前步计算重叠（不进关键路径）；pending_loads 跨步
+  追踪在途传输，load 复用在途不重复占带宽；执行等待在途传输完成
+- 资源层队列可见性：queue_depth / utilization / wait_time（peek）
+- 实测：热专家 trace 中 overlap(pf=2) TPOT 2.368ms，比全 CPU 放置快 50.7%，
+  比 lru 快 4.3%；PCIe 拥塞时预取门控生效
+- 依据：`docs/research/2026-08-20-queue-overlap-heterogeneous-survey.md`
+  （Kairos / HEFT / Mooncake / KTransformers / APEX / MoE-Infinity / llama.cpp）
 
 ### 真实推理性能实测
 - **NF4 4-bit 量化进 GPU**：OLMoE-1B-7B（26G fp32 → ~4G），显存 6510MiB，362.8ms/forward
@@ -74,19 +86,20 @@
 ### 高优先级
 | # | 事项 | 状态 |
 |---|---|---|
-| 1 | 用 conda 重建 vLLM 编译环境并完成编译 | 🔄 进行中 |
-| 2 | vLLM 编译成功后测 OLMoE 推理 → 记录框架对比 | ⏳ |
-| 3 | v5 代码同步推送 ai-scheduler → PR #4 | ⏳ |
+| 1 | v6 排队/重叠增强提交 MR（feat/moesim-v6-queue-overlap → PR） | 🔄 进行中 |
+| 2 | 用 conda 重建 vLLM 编译环境并完成编译 | 🔄 进行中 |
+| 3 | vLLM 编译成功后测 OLMoE 推理 → 记录框架对比 | ⏳ |
 | 4 | SGLang 环境搭建 + SM12 flashinfer 兼容性验证 | ⏳ |
 
 ### 中优先级（moesim 增强）
 | # | 事项 | 说明 |
 |---|---|---|
-| 5 | 真实 vLLM kernel 级集成 | 当前后端为记账式 |
-| 6 | 生产级 RL 训练循环 | 当前为模拟器内 Q-learning |
-| 7 | 多 GPU 真机验证 | 当前仅模拟层 |
-| 8 | INT4 kernel 性能优化 | 当前为精度优先反量化路径 |
-| 9 | 调度决策开销优化 | 缩小与 HF 原生差距（决策缓存已部分解决） |
+| 5 | 请求级并发模拟（多请求共享资源的真正排队，DistServe 式时延分解） | v6 排队在资源层，请求层未做 |
+| 6 | 真实 vLLM kernel 级集成 | 当前后端为记账式 |
+| 7 | 生产级 RL 训练循环 | 当前为模拟器内 Q-learning |
+| 8 | 多 GPU 真机验证 | 当前仅模拟层 |
+| 9 | INT4 kernel 性能优化 | 当前为精度优先反量化路径（本机测试环境性失败） |
+| 10 | 调度决策开销优化 | 缩小与 HF 原生差距（决策缓存已部分解决） |
 
 ### 低优先级 / 远期
 | # | 事项 | 说明 |
@@ -101,13 +114,16 @@
 ## 第四部分：关键文档索引
 
 | 文档 | 路径 |
-|---|---|
+|---|---|---|
 | 项目总文档 | `docs/PROJECT_SUMMARY.md` |
+| 变更历史 | `docs/CHANGELOG.md` |
 | 会话历史 | `docs/SESSION_HISTORY.md` |
 | vLLM 编译指南 | `docs/vllm-build-guide.md` |
 | 论文综述（50+ 篇） | `docs/research/moe-inference-optimization-survey.md` |
+| v6 排队/重叠综述 | `docs/research/2026-08-20-queue-overlap-heterogeneous-survey.md` |
 | 主设计规范 | `docs/superpowers/specs/2026-08-09-moesim-design.md` |
-| v1-v5 实施计划 | `docs/superpowers/plans/` |
+| v6 设计规范 | `docs/superpowers/specs/2026-08-20-moesim-v6-design.md` |
+| v1-v6 实施计划 | `docs/superpowers/plans/` |
 | 真机验证协议 | `benchmarks/e2e/verify_on_real_machine.md` |
 
 ## 第五部分：GitHub 交付
@@ -117,6 +133,6 @@
 | PR #1 | v1+v2 | ✅ 已合并 |
 | PR #2 | v3 | ✅ 已合并 |
 | PR #3 | v4 | ✅ 已创建 |
-| PR #4 | v5 + 文档 | ⏳ 待创建 |
+| PR #4 | v5 + v6 + 文档（feat/moesim-v6-queue-overlap） | 🔄 待创建 |
 
 仓库：https://github.com/evechan32/ai-scheduler

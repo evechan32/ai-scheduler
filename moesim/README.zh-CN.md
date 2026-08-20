@@ -110,6 +110,23 @@ cost_model       TPOT=   3.456ms  tput= 289.385 tok/s  hit=0.158
 剩余：真实 vLLM kernel 级集成、生产级 RL 训练循环、多 GPU 真机验证、
 INT4 kernel 优化。
 
+## v6 交付（2026-08-20）
+
+排队与重叠感知调度，依据异构算力研究（HEFT / MoE-Infinity / KTransformers /
+APEX / Mooncake，见 `docs/research/2026-08-20-queue-overlap-heterogeneous-survey.md`）：
+
+- **排队感知资源** —— `BandwidthResource` / `ComputeResource` 暴露
+  `queue_depth()` / `utilization()` / peek `wait_time_ms()`；模拟器每步把
+  队列深度 / 利用率 / 等待时间快照反馈给调度器。
+- **`OverlapAwarePolicy`** —— HEFT 式最早完成时间放置（`EFT = 排队等待 + 执行`，
+  CPU 争用计入）+ 带宽门控预取：预测的下步专家传输在后台与计算重叠运行，
+  不进步关键路径；`prefetch` Action + 跨步 `pending_loads` 追踪避免重复占用 PCIe。
+- **排队与重叠指标** —— 队列深度、PCIe/GPU/CPU 利用率、隐藏传输时间、重叠率。
+- **基准** —— `benchmarks/e2e/compare_queue_overlap.py`：热专家 trace 上，
+  预取重叠 TPOT 2.368ms vs 全 CPU 放置 4.800ms（快 50.7%），优于 lru（2.475ms）；
+  PCIe 拥塞时预取门控限制后台流量。
+- **文档** —— v6 设计规范、TDD 计划、调研综述、CHANGELOG。
+
 ## 完整文档
 
 所有实现、设计决策、性能实测数据汇总在

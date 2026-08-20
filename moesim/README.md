@@ -122,3 +122,25 @@ RL policies, multi-GPU topology.
 
 Remaining: real vLLM kernel-level integration, production RL training loop,
 multi-GPU real-machine verification, INT4 kernel optimization.
+
+## v6 Deliverables (2026-08-20)
+
+Queueing- and overlap-aware scheduling, grounded in heterogeneous-compute
+research (HEFT, MoE-Infinity, KTransformers, APEX, Mooncake; see
+`docs/research/2026-08-20-queue-overlap-heterogeneous-survey.md`):
+
+- **Queueing-aware resources** — `BandwidthResource` / `ComputeResource` expose
+  `queue_depth()`, `utilization()`, and peek `wait_time_ms()`; the simulator
+  feeds queue depth / utilization / wait snapshots to the scheduler each step.
+- **`OverlapAwarePolicy`** — HEFT-style earliest-finish-time placement
+  (`EFT = queue wait + execution`, CPU contention included) plus bandwidth-gated
+  prefetch: transfers for predicted next-step experts run in the background,
+  overlapped with compute, and never sit on the step critical path. A `prefetch`
+  Action and cross-step `pending_loads` tracking prevent double-booking PCIe.
+- **Queueing & overlap metrics** — queue depth, PCIe/GPU/CPU utilization,
+  hidden transfer time, and overlap ratio.
+- **Benchmark** — `benchmarks/e2e/compare_queue_overlap.py`: on a hot-expert
+  trace, prefetch overlap cuts TPOT 2.368ms vs 4.800ms for an all-CPU placement
+  (50.7% faster) and beats LRU (2.475ms); the prefetch gate limits background
+  traffic when PCIe is congested.
+- **Docs** — v6 design spec, TDD plan, research survey, CHANGELOG.

@@ -1,8 +1,47 @@
 # moesim 开发会话历史记录
 
-> 记录时间：2026-08-17
+> 记录时间：2026-08-20（新增 v6 会话）
 > 项目：moesim — 异构计算感知的 MoE 专家下放调度框架
-> 当前分支：feat/moesim-v5 | 测试：82/82 通过
+> 当前分支：feat/moesim-v6-queue-overlap | 测试：107/107 通过（3 skipped，1 INT4 环境性失败）
+
+---
+
+## 0. v6 会话记录（2026-08-20）
+
+**用户需求**：继续完善项目，要求考虑**排队影响 / CPU 资源影响 / 实现通算并行 / 实现
+一定的重叠性**，并查阅异构算力相关顶会论文与高星项目参考；所有开发需文档 + 历史记录；
+开发完提交 MR。
+
+**研究**（两个 librarian 后台任务超时后改为本人定向检索，arXiv ID 全部核实）：
+- 论文：Kairos（排队占 P95 TTFT 77-98%）、DistServe（时延五段分解）、HEFT（EFT 决策）、
+  Mooncake（排队感知调度）、KTransformers（异步 CPU-GPU + Expert Deferral）、
+  APEX（异步重叠）、PowerInfer-2（I/O-计算流水线）、MoE-Infinity（激活感知预取）、
+  TetriInfer、Pre-gated MoE。
+- 项目：ktransformers（~11k★）、llama.cpp（~80k★，--n-cpu-moe V 曲线）、
+  vLLM（~60k★，async scheduling）、SGLang（~25k★）、MoE-Infinity、PowerInfer、
+  Mooncake、TensorRT-LLM。
+
+**实现**（TDD，7 个 commit）：
+1. `feat: expose queue depth, utilization and peek wait time in resources`
+2. `feat: add queueing and overlap metrics`（+fix import）
+3. `feat: add prefetch action and resource feedback fields to state`
+4. `feat: overlap-aware policy with EFT placement and gated prefetch`
+5. `feat: simulator overlaps prefetch transfers with compute; fix residency capacity check`
+6. `feat: queue/overlap comparison harness`
+
+**关键实测**（热专家 trace，200 步，PCIe 8GB/s）：
+| 策略 | TPOT | 说明 |
+|---|---|---|
+| residency | 4.800ms | 全 CPU（12.5ms load > 4ms CPU） |
+| lru | 2.475ms | |
+| **overlap(pf=2)** | **2.368ms** | 🏆 预取重叠，快 50.7% |
+
+**修复的真实缺陷**：v6 把 gpu_queue_len 从「本步执行数」改为「资源真实积压」后，
+暴露 ResidencyAwarePolicy 无容量检查的缺陷（超容量 load 抛 ValueError）→ 超容量
+回退 execute_cpu。
+
+**文档交付**：调研综述、v6 设计规范、v6 实施计划、CHANGELOG、PROJECT_SUMMARY、
+DEV_RECORD_AND_ROADMAP、README 中英文更新。
 
 ---
 
