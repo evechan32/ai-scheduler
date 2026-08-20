@@ -10,7 +10,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from moesim.scheduler.cost_model import ExpertProfile, profiles_from_dicts
+from moesim.scheduler.cost_model import profiles_from_dicts
 from moesim.scheduler.policies.cost_model import CostModelPolicy
 from moesim.scheduler.policies.lru import LRUPolicy
 from moesim.scheduler.policies.overlap import OverlapAwarePolicy
