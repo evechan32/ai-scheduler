@@ -49,9 +49,10 @@ class ResidencyAwarePolicy(Scheduler):
 
             # 驻留收益：累计价值超过 load_cost → load（长期收益）
             benefit = state.residency_benefit.get(eid, 0.0)
-            if benefit >= load_cost * self.residency_bonus_factor:
+            can_load = state.used_gpu_mb + profile.size_mb <= state.gpu_capacity_mb + 1e-9
+            if benefit >= load_cost * self.residency_bonus_factor and can_load:
                 actions.append(Action(kind="load", expert_ids=(eid,)))
-            elif cpu_eff < load_cost + gpu_eff:
+            elif cpu_eff < load_cost + gpu_eff or not can_load:
                 actions.append(Action(kind="execute_cpu", expert_ids=(eid,)))
             else:
                 actions.append(Action(kind="load", expert_ids=(eid,)))

@@ -44,6 +44,8 @@ class MoESimulation:
         self._state.requested = tuple(experts)
         for eid in experts:
             self._state.mark_access(eid)
+        self._prune_pending_loads()
+        self._snapshot_feedback(experts)
         actions = self.scheduler.decide(self._state, self._clock)
         apply_actions(self._state, actions)
 
@@ -56,31 +58,35 @@ class MoESimulation:
         decided = set(cpu_ids) | set(gpu_ids)
         default_gpu = [eid for eid in experts if eid not in decided]
 
-        # Feed queue-length feedback back to the scheduler: how many experts
-        # execute on GPU vs CPU in this step.
-        self._state.gpu_queue_len = len(gpu_ids) + len(default_gpu)
-        self._state.cpu_queue_len = len(cpu_ids)
-
-        # Feed residency-benefit feedback: each load is a migration whose PCIe
-        # cost the expert's residency saves on future hits.
+        # Feed residency-benefit feedback: each booked transfer is a migration
+        # whose PCIe cost the expert's residency saves on future hits.
         for action in actions:
-            if action.kind == "load":
+            if action.kind in ("load", "prefetch"):
                 for eid in action.expert_ids:
                     self._state.record_load(
                         eid, self.pcie.transfer_time_ms(self.profiles[eid].size_mb)
                     )
 
-        # Schedule PCIe loads first; remember each expert's load completion time.
+        # Book PCIe transfers. In-flight transfers (from an earlier prefetch)
+        # are reused instead of re-booked, so the bus is never double-charged.
         load_times: dict[str, float] = {}
         for action in actions:
             if action.kind == "load":
                 for eid in action.expert_ids:
-                    load_times[eid] = self.pcie.reserve(self._clock, self.profiles[eid].size_mb)
+                    load_times[eid] = self._book_transfer(eid, critical=True)
+        for action in actions:
+            if action.kind == "prefetch":
+                for eid in action.expert_ids:
+                    self._book_transfer(eid, critical=False)
 
         completions: list[float] = []
         # GPU executions start at load completion (or now if already resident).
         for eid in list(gpu_ids) + default_gpu:
-            start = load_times.get(eid, self._clock)
+            start = max(
+                self._clock,
+                load_times.get(eid, self._clock),
+                self._state.pending_loads.get(eid, self._clock),
+            )
             completions.append(self.gpu.schedule(start, self.profiles[eid].gpu_exec_ms))
         # CPU executions run in parallel with GPU/PCIe work (separate resource).
         for eid in cpu_ids:
@@ -93,10 +99,10 @@ class MoESimulation:
         for action in actions:
             if action.kind == "evict_kv":
                 for eid in action.expert_ids:
-                    kv_times.append(self.pcie.reserve(self._clock, self.profiles[eid].size_mb))
+                    kv_times.append(self._kv_transfer(eid))
             elif action.kind == "fetch_kv":
                 for eid in action.expert_ids:
-                    kv_times.append(self.pcie.reserve(self._clock, self.profiles[eid].size_mb))
+                    kv_times.append(self._kv_transfer(eid))
         # include KV transfer completions in the step's completion time
         completions.extend(kv_times)
 
@@ -106,3 +112,60 @@ class MoESimulation:
         # Each step is one decode step (activating multiple experts); it
         # contributes token_count (default 1) tokens.
         self._metrics.record_completion(tokens=token_count, time_ms=step_time)
+
+    def _prune_pending_loads(self) -> None:
+        self._state.pending_loads = {
+            eid: completion
+            for eid, completion in self._state.pending_loads.items()
+            if completion > self._clock
+        }
+
+    def _snapshot_feedback(self, experts: list[str]) -> None:
+        self._state.pcie_queue_len = self.pcie.queue_depth(self._clock)
+        self._state.gpu_queue_len = self.gpu.queue_depth(self._clock)
+        self._state.cpu_queue_len = (
+            self.cpu.queue_depth(self._clock) if self.cpu is not None else 0
+        )
+        self._state.pcie_utilization = self.pcie.utilization(self._clock) if self._clock > 0 else 0.0
+        self._state.gpu_utilization = self.gpu.utilization(self._clock) if self._clock > 0 else 0.0
+        self._state.cpu_utilization = (
+            self.cpu.utilization(self._clock) if (self.cpu is not None and self._clock > 0) else 0.0
+        )
+        if experts:
+            profile = self.profiles[experts[0]]
+            self._state.gpu_wait_ms = self.gpu.wait_time_ms(self._clock, profile.gpu_exec_ms) \
+                - self.gpu.process_time_ms(profile.gpu_exec_ms)
+            if self.cpu is not None:
+                self._state.cpu_wait_ms = self.cpu.wait_time_ms(self._clock, profile.cpu_exec_ms) \
+                    - self.cpu.process_time_ms(profile.cpu_exec_ms)
+            else:
+                self._state.cpu_wait_ms = 0.0
+            self._state.pcie_wait_ms = self.pcie.wait_time_ms(self._clock, profile.size_mb) \
+                - self.pcie.transfer_time_ms(profile.size_mb)
+        self._metrics.record_queue_sample("pcie", self._state.pcie_queue_len)
+        self._metrics.record_queue_sample("gpu", self._state.gpu_queue_len)
+        self._metrics.record_queue_sample("cpu", self._state.cpu_queue_len)
+        self._metrics.record_utilization("pcie", self._state.pcie_utilization)
+        self._metrics.record_utilization("gpu", self._state.gpu_utilization)
+        self._metrics.record_utilization("cpu", self._state.cpu_utilization)
+
+    def _book_transfer(self, eid: str, critical: bool) -> float:
+        pending = self._state.pending_loads.get(eid)
+        if pending is not None:
+            return pending
+        completion = self.pcie.reserve(self._clock, self.profiles[eid].size_mb)
+        self._state.pending_loads[eid] = completion
+        transfer_ms = self.pcie.transfer_time_ms(self.profiles[eid].size_mb)
+        self._metrics.record_transfer(transfer_ms)
+        if critical:
+            self._metrics.record_transfer_wait(max(0.0, completion - transfer_ms - self._clock))
+        else:
+            self._metrics.record_prefetch()
+            self._metrics.record_hidden_transfer(transfer_ms)
+        return completion
+
+    def _kv_transfer(self, eid: str) -> float:
+        completion = self.pcie.reserve(self._clock, self.profiles[eid].size_mb)
+        transfer_ms = self.pcie.transfer_time_ms(self.profiles[eid].size_mb)
+        self._metrics.record_transfer(transfer_ms)
+        return completion
