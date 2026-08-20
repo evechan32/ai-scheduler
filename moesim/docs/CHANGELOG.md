@@ -43,6 +43,8 @@ All notable changes to moesim are recorded here. Format follows
 
 - 新增 `docs/research/2026-08-20-queue-overlap-heterogeneous-survey.md`
   （排队/CPU/并行/重叠方向论文与高星项目综述，arXiv ID 已核实）。
+- 新增 `docs/research/2026-08-20-paper-implementation-trace.md`
+  （论文-实现追踪：机制 → 代码落点 → 参考程度 → 简化点）。
 - 新增 `docs/superpowers/specs/2026-08-20-moesim-v6-design.md`。
 - 新增 `docs/superpowers/plans/2026-08-20-moesim-v6.md`（TDD 计划）。
 

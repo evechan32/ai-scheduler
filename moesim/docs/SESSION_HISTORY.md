@@ -40,8 +40,8 @@
 暴露 ResidencyAwarePolicy 无容量检查的缺陷（超容量 load 抛 ValueError）→ 超容量
 回退 execute_cpu。
 
-**文档交付**：调研综述、v6 设计规范、v6 实施计划、CHANGELOG、PROJECT_SUMMARY、
-DEV_RECORD_AND_ROADMAP、README 中英文更新。
+**文档交付**：调研综述、论文-实现追踪、v6 设计规范、v6 实施计划、CHANGELOG、
+PROJECT_SUMMARY、DEV_RECORD_AND_ROADMAP、README 中英文更新。
 
 ---
 

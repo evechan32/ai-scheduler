@@ -121,6 +121,7 @@
 | vLLM 编译指南 | `docs/vllm-build-guide.md` |
 | 论文综述（50+ 篇） | `docs/research/moe-inference-optimization-survey.md` |
 | v6 排队/重叠综述 | `docs/research/2026-08-20-queue-overlap-heterogeneous-survey.md` |
+| 论文-实现追踪 | `docs/research/2026-08-20-paper-implementation-trace.md` |
 | 主设计规范 | `docs/superpowers/specs/2026-08-09-moesim-design.md` |
 | v6 设计规范 | `docs/superpowers/specs/2026-08-20-moesim-v6-design.md` |
 | v1-v6 实施计划 | `docs/superpowers/plans/` |

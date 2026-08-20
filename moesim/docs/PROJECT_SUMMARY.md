@@ -169,6 +169,8 @@ python benchmarks/microbench/measure_expert_time.py
 | `docs/superpowers/plans/2026-08-15-moesim-v2.md` | v2 实施计划（Task 16-24） |
 | `docs/superpowers/plans/2026-08-15-moesim-v3.md` | v3 实施计划（Task 25-29） |
 | `benchmarks/e2e/verify_on_real_machine.md` | 真机验证协议（含硬件限制与实测记录） |
+| `docs/research/2026-08-20-queue-overlap-heterogeneous-survey.md` | v6 排队/重叠调研综述（论文 + 高星项目，arXiv 已核实） |
+| `docs/research/2026-08-20-paper-implementation-trace.md` | **论文-实现追踪**（机制 → 代码落点 → 参考程度 → 简化点） |
 
 ## 7. 关键设计决策记录
 
