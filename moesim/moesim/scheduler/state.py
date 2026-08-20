@@ -20,6 +20,14 @@ class ScheduleState:
     kv_host_mb: float = 0.0
     kv_gpu_capacity_mb: float = 0.0
     gpu_resident: dict[int, set[str]] = field(default_factory=lambda: {0: set()})
+    pcie_queue_len: int = 0
+    pcie_utilization: float = 0.0
+    gpu_utilization: float = 0.0
+    cpu_utilization: float = 0.0
+    gpu_wait_ms: float = 0.0
+    cpu_wait_ms: float = 0.0
+    pcie_wait_ms: float = 0.0
+    pending_loads: dict[str, float] = field(default_factory=dict)
     gpu_queue_len: int = 0
     cpu_queue_len: int = 0
     residency_benefit: dict[str, float] = field(default_factory=dict)
