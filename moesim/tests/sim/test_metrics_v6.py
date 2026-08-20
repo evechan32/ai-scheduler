@@ -1,4 +1,6 @@
 """v6: queueing and overlap metrics."""
+import pytest
+
 from moesim.sim.metrics import Metrics
 
 
