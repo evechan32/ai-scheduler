@@ -89,10 +89,15 @@ class MoESimulation:
             )
             completions.append(self.gpu.schedule(start, self.profiles[eid].gpu_exec_ms))
         # CPU executions run in parallel with GPU/PCIe work (separate resource).
+        # Quantized variants execute faster on CPU (HOBBIT mixed precision).
         for eid in cpu_ids:
             if self.cpu is None:
                 raise RuntimeError("execute_cpu requested but no CPU resource configured")
-            completions.append(self.cpu.schedule(self._clock, self.profiles[eid].cpu_exec_ms))
+            completions.append(
+                self.cpu.schedule(
+                    self._clock, self.profiles[eid].quantized_cpu_exec_ms()
+                )
+            )
 
         # KV evict/fetch transfers run over PCIe concurrently with expert loads.
         kv_times: list[float] = []
@@ -153,9 +158,11 @@ class MoESimulation:
         pending = self._state.pending_loads.get(eid)
         if pending is not None:
             return pending
-        completion = self.pcie.reserve(self._clock, self.profiles[eid].size_mb)
+        profile = self.profiles[eid]
+        size_mb = profile.size_mb if critical else profile.quantized_size_mb()
+        completion = self.pcie.reserve(self._clock, size_mb)
         self._state.pending_loads[eid] = completion
-        transfer_ms = self.pcie.transfer_time_ms(self.profiles[eid].size_mb)
+        transfer_ms = self.pcie.transfer_time_ms(size_mb)
         self._metrics.record_transfer(transfer_ms)
         if critical:
             self._metrics.record_transfer_wait(max(0.0, completion - transfer_ms - self._clock))

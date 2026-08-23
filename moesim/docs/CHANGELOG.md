@@ -73,3 +73,35 @@ All notable changes to moesim are recorded here. Format follows
 ## [v1] - 2026-08-09
 
 - 领域无关 DES 核心、资源模型、三种调度策略、CPU FP16 kernel、校准回路。
+
+## [v7] - 2026-08-20
+
+### Added — 混合精度专家放置（mixed-precision placement）
+
+- `scheduler/cost_model.py`: `ExpertProfile` 增加量化变体字段 `q_size_mb` / `q_cpu_exec_ms`
+  （默认 None 向后兼容）+ `quantized_size_mb()` / `quantized_cpu_exec_ms()`。
+- `scheduler/policies/overlap.py`: CPU 路径 EFT 用 `quantized_cpu_exec_ms` —— 量化 CPU
+  执行更快 → 更多专家倾向 CPU（HOBBIT 动态精度选择）。
+- `sim/moe_adapter.py`: `execute_cpu` 用量化 CPU 执行时间；`prefetch` 传输用
+  `quantized_size_mb`（低精度预取更小，HOBBIT：预取错误惩罚小）。
+- 依据：HOBBIT（arXiv:2411.01433）、QuantMoE-Bench（arXiv:2406.08155）、
+  ktransformers INT4 CPU gemm（arXiv:2410.06410）。
+
+### Added — 真机资源利用率监控
+
+- `benchmarks/microbench/resource_monitor.py`: 零依赖采样器（nvidia-smi 轮询
+  gpu_util / 显存 / 时钟 + /proc CPU 与内存利用率 + dmon sm/mem 代理 + 可选 NCU）。
+- `benchmarks/microbench/profile_resource_usage.py`: compute-bound + bandwidth-bound
+  负载下采集并落盘 JSON。
+- 实测（RTX 5070 Laptop 8GiB）：DRAM 带宽 **315–323 GB/s（r+w）= 理论 448 GB/s 的
+  ~70–72%**；matmul 下 GPU util/sm_active 峰值 100% 而 DRAM bw-util 仅 ~3–9%。
+- 记录：`benchmarks/microbench/RESOURCE_PROFILING.md`。
+
+### Docs
+
+- `docs/research/2026-08-20-heterogeneous-compute-spectrum-survey.md`: 异构算力全谱系
+  综述（混合精度/异构内存/调度/边缘硬件，全部条目本人核实）。
+
+### Tests
+
+- 116 passed, 2 skipped（新增 7 个混合精度测试）。

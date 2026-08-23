@@ -36,7 +36,9 @@ class OverlapAwarePolicy(Scheduler):
         return state.cpu_queue_len / self.cpu_concurrency
 
     def _cpu_eft(self, state: ScheduleState, profile) -> float:
-        return state.cpu_wait_ms + profile.cpu_exec_ms * (1.0 + self._cpu_contention(state))
+        return state.cpu_wait_ms + profile.quantized_cpu_exec_ms() * (
+            1.0 + self._cpu_contention(state)
+        )
 
     def _gpu_eft(self, state: ScheduleState, profile) -> float:
         load_cost = self.pcie.transfer_time_ms(profile.size_mb)
