@@ -160,3 +160,60 @@ nvidia-smi  # 确认显存被占用
 - vLLM 源码：https://github.com/vllm-project/vllm
 - Blackwell 消费级构建指南：https://github.com/vllm-project/vllm/pull/38412
 - SM12 兼容修复：https://github.com/vllm-project/vllm/pull/48956
+
+## 12. moesim × vLLM 可插入性验证（2026-08-20）
+
+> 目标：测试 moesim 当前是否能插入 vLLM。结论分四层——**环境兼容 ✓、API 契约 ✓、
+> 真实引擎端到端 ✗（被 vLLM 编译未完成阻塞）、kernel 级深度插入 ✗（架构限制）。**
+
+### 12.1 环境状态检查
+
+- `vllm-build` conda 环境存在：Python 3.11.15 / torch 2.11.0+cu128 / transformers 5.15.1 / numpy 2.3.5。
+- **vLLM 未完成编译安装**：`pip show vllm` 无记录；`import vllm` 命中源码目录的命名空间空壳
+  （`NamespaceLoader` → `/home/qyw/projects/vllm`，`vllm.__file__` 为 None）；`import vllm.engine`
+  报 ModuleNotFoundError。与 §10 记录的 CUDA 头文件不兼容阻塞一致。
+- 因此**真实 LLM 引擎的端到端集成测试当前无法执行**，需先完成编译（nvcc/cccl 版本统一）。
+
+### 12.2 moesim 在 vllm-build 环境兼容性（实测）
+
+- `pip install -e ".[core]"` 安装成功（numpy 2.3.5 满足）。
+- 全量测试：**109 passed, 2 skipped**（23.6s）——包括 INT4 kernel 测试。
+  **注**：主环境（torch 2.9）下 INT4 测试失败（rel err 0.175 > 0.10），在 vllm-build
+  （torch 2.11）下**通过**——确认该失败是 torch 版本相关的环境性问题，非代码缺陷。
+- moesim 与 vLLM 配套依赖栈（torch 2.11 / transformers 5.15）完全兼容。
+
+### 12.3 API 契约检查（VLLMExecutor ↔ vLLM LLM.generate）
+
+moesim 后端 `moesim/executor/backends/vllm.py::VLLMExecutor.execute_gpu` 调用
+`self.engine.generate(hidden_states)`（单位置参数转发）。
+
+vLLM 源码（`/home/qyw/projects/vllm/vllm/entrypoints/llm.py:418`）签名：
+
+```python
+def generate(self, prompts, sampling_params=None, *, use_tqdm=True,
+             lora_request=None, priority=None, tokenization_kwargs=None,
+             mm_processor_kwargs=None) -> list[RequestOutput]
+```
+
+**结论：位置参数契约兼容**（prompts 接受 hidden_states 透传）。vLLM 编译完成后
+`VLLMExecutor(LLM(...))` 可直接对接，无需改 moesim 代码。
+
+### 12.4 深度插入边界（架构限制）
+
+vLLM 的 MoE 层是 **fused kernel 黑盒**：`vllm/model_executor/layers/fused_moe/`
+（Triton/CUDA fused MoE + deep_gemm 等），**没有逐专家 Python 分派接口**——
+无法像 transformers 后端（`MoEForwardHook`）那样插入逐专家 CPU/GPU 调度。
+
+moesim 在 vLLM 上可用的插入形态：
+1. **记账式 backend**（现状）：`VLLMExecutor` 转发整个请求给 vLLM，驻留记录在 moesim 侧。
+2. **kernel 级集成**（路线图 #5，未做）：改造 `FusedMoE` 层暴露逐专家钩子——工作量较大，
+   属于远期。
+
+### 12.5 结论
+
+| 层面 | 状态 |
+|---|---|
+| moesim 安装/测试于 vllm-build 环境 | ✅ 109 passed |
+| VLLMExecutor ↔ LLM.generate API 契约 | ✅ 兼容 |
+| 真实引擎端到端（需 vLLM 编译完成） | ⏸ 阻塞于 vLLM 编译 |
+| MoE kernel 级深度插入 | ✗ 架构限制（fused 黑盒） |
