@@ -1,6 +1,6 @@
 # moesim — 异构 MoE 调度框架完整文档
 
-> 项目状态：**v1-v6 全部完成** | 107/107 测试通过（3 skipped，1 INT4 环境性失败） | PR #1/#2 已合并
+> 项目状态：**v1-v7 全部完成** | 116/116 测试通过（2 skipped，vllm-build 环境） | PR #1/#2 已合并
 > 本文档汇总全部实现、设计决策、性能实测数据与运行方式。
 
 ---
@@ -291,3 +291,26 @@ MoE-Infinity（激活感知预取 + 带宽串行化）、llama.cpp（CPU offload
 - vllm-project/flash-attention
 - ARM-software/ComputeLibrary（仅 ARM 构建需要）
 - oneapi-src/oneDNN（仅 x86 可选）
+
+
+## 11. v7 增强（2026-08-20，混合精度放置 + 真机资源监控，116 测试）
+
+| 模块 | 交付 |
+|---|---|
+| `scheduler/cost_model.py` | `ExpertProfile` 量化变体字段（q_size_mb / q_cpu_exec_ms，默认 None 兼容） |
+| `scheduler/policies/overlap.py` | CPU EFT 用量化执行时间（量化 CPU 更快 → 更多专家放 CPU） |
+| `sim/moe_adapter.py` | execute_cpu 用量化时间；prefetch 用量化尺寸（低精度预取） |
+| `benchmarks/microbench/resource_monitor.py` | 零依赖真机资源监控（gpu_util / sm_active 代理 / DRAM bw-util 代理 / CPU / 内存 / NCU 可选） |
+| `benchmarks/microbench/profile_resource_usage.py` | compute-bound + bandwidth-bound 实测并落盘 JSON |
+
+**依据**：HOBBIT（arXiv:2411.01433，gating 分数决定精度 + 低精度预取）、
+QuantMoE-Bench（arXiv:2406.08155，频率感知 bit 分配）、ktransformers INT4 CPU gemm。
+全谱系综述：`docs/research/2026-08-20-heterogeneous-compute-spectrum-survey.md`。
+
+**真机实测（RTX 5070 Laptop 8GiB，torch 2.11）：**
+- DRAM 带宽 **315–323 GB/s（r+w）= 理论 448 GB/s 的 ~70–72%**
+- compute-bound matmul：GPU util / sm_active 峰值 100%，DRAM bw-util 仅 ~3–9%
+  （计算密集特征）
+- CPU 利用率峰值 ~20%，系统内存利用率 ~38%
+- NCU（精确 sm__throughput / dram__throughput）在容器不可用（LibraryNotLoaded），
+  以 dmon 驱动指标代理（见 `benchmarks/microbench/RESOURCE_PROFILING.md`）
