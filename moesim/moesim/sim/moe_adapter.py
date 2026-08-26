@@ -17,6 +17,9 @@ class MoESimulation:
         pcie: BandwidthResource,
         gpu: ComputeResource | None = None,
         cpu: ComputeResource | None = None,
+        kv_per_token_mb: float = 0.0,
+        kv_gpu_capacity_mb: float = 0.0,
+        kv_host_capacity_mb: float = 0.0,
     ) -> None:
         self.scheduler = scheduler
         self.profiles = profiles
@@ -25,8 +28,11 @@ class MoESimulation:
         self.cpu = cpu
         self._clock = 0.0
         self._state = ScheduleState(
-            profiles=profiles, resident=set(), gpu_capacity_mb=gpu_capacity_mb
+            profiles=profiles, resident=set(), gpu_capacity_mb=gpu_capacity_mb,
+            kv_per_token_mb=kv_per_token_mb,
+            kv_gpu_capacity_mb=kv_gpu_capacity_mb,
         )
+        self._kv_host_capacity_mb = kv_host_capacity_mb
         self._metrics = Metrics()
 
     def feed(self, step_experts: list[str], token_count: int = 1) -> None:
@@ -45,6 +51,7 @@ class MoESimulation:
         for eid in experts:
             self._state.mark_access(eid)
         self._prune_pending_loads()
+        self._account_kv(token_count)
         self._snapshot_feedback(experts)
         actions = self.scheduler.decide(self._state, self._clock)
         apply_actions(self._state, actions)
@@ -124,6 +131,27 @@ class MoESimulation:
             for eid, completion in self._state.pending_loads.items()
             if completion > self._clock
         }
+
+    def _account_kv(self, token_count: int) -> None:
+        kv_per_token = self._state.kv_per_token_mb
+        if kv_per_token <= 0.0:
+            return
+        self._state.kv_gpu_mb += token_count * kv_per_token
+        capacity = self._state.kv_gpu_capacity_mb
+        if capacity > 0.0 and self._state.kv_gpu_mb > capacity:
+            excess = self._state.kv_gpu_mb - capacity
+            self._state.kv_gpu_mb = capacity
+            self._state.kv_host_mb += excess
+            self._metrics.record_kv_offload(excess)
+        if capacity > 0.0:
+            self._state.kv_pressure = self._state.kv_gpu_mb / capacity
+            self._metrics.record_kv_sample(
+                "gpu", self._state.kv_gpu_mb / capacity
+            )
+            if self._kv_host_capacity_mb > 0.0:
+                self._metrics.record_kv_sample(
+                    "host", min(1.0, self._state.kv_host_mb / self._kv_host_capacity_mb)
+                )
 
     def _snapshot_feedback(self, experts: list[str]) -> None:
         self._state.pcie_queue_len = self.pcie.queue_depth(self._clock)
