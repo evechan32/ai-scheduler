@@ -23,6 +23,10 @@ class Metrics:
     total_transfer_ms: float = 0.0
     hidden_transfer_ms: float = 0.0
     prefetch_count: int = 0
+    kv_gpu_utilization: dict[str, float] = field(default_factory=lambda: {"mean": 0.0, "max": 0.0, "p95": 0.0})
+    kv_host_utilization: dict[str, float] = field(default_factory=lambda: {"mean": 0.0, "max": 0.0, "p95": 0.0})
+    kv_offload_bytes: float = 0.0
+    _kv_samples: dict[str, list[float]] = field(default_factory=dict)
     _queue_samples: dict[str, list[int]] = field(default_factory=dict)
     _utilization_samples: dict[str, list[float]] = field(default_factory=dict)
 
@@ -42,6 +46,20 @@ class Metrics:
         setattr(self, f"{which}_queue_depth_max",
                 max(getattr(self, f"{which}_queue_depth_max"), depth))
         setattr(self, f"{which}_queue_depth_avg", sum(samples) / len(samples))
+
+    def record_kv_sample(self, which: str, util: float) -> None:
+        samples = self._kv_samples.setdefault(which, [])
+        samples.append(util)
+        sorted_v = sorted(samples)
+        p95 = sorted_v[min(len(sorted_v) - 1, int(0.95 * len(sorted_v)))]
+        setattr(self, f"kv_{which}_utilization", {
+            "mean": sum(samples) / len(samples),
+            "max": max(samples),
+            "p95": p95,
+        })
+
+    def record_kv_offload(self, mb: float) -> None:
+        self.kv_offload_bytes += mb
 
     def record_utilization(self, which: str, util: float) -> None:
         samples = self._utilization_samples.setdefault(which, [])

@@ -28,6 +28,10 @@ class ScheduleState:
     cpu_wait_ms: float = 0.0
     pcie_wait_ms: float = 0.0
     pending_loads: dict[str, float] = field(default_factory=dict)
+    kv_per_token_mb: float = 0.0
+    kv_pressure: float = 0.0
+    kv_evict_count: int = 0
+    kv_fetch_count: int = 0
     gpu_queue_len: int = 0
     cpu_queue_len: int = 0
     residency_benefit: dict[str, float] = field(default_factory=dict)
