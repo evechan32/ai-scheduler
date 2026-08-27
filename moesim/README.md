@@ -144,3 +144,20 @@ research (HEFT, MoE-Infinity, KTransformers, APEX, Mooncake; see
   (50.7% faster) and beats LRU (2.475ms); the prefetch gate limits background
   traffic when PCIe is congested.
 - **Docs** — v6 design spec, TDD plan, research survey, CHANGELOG.
+
+
+## v8 Deliverables (2026-08-20)
+
+KV cache tiering simulation + KV-joint scheduling (user request: "simulate KV
+offloading, schedule heterogeneously with KV cache as a first-class resource"):
+
+- **KV growth simulation** — every decode step allocates `kv_per_token_mb` into
+  the GPU KV pool; overflow is **auto-offloaded to host memory over PCIe**
+  (contending with expert loads, so KV offload impact on scheduling is visible).
+- **Pressure feedback** — `kv_pressure` snapshot per step feeds the scheduler.
+- **`KVJointPolicy`** — under high KV pressure: experts go CPU (saves VRAM for
+  KV), prefetch pauses, cold KV evicted; low pressure: normal EFT + prefetch.
+- **Benchmark** — `benchmarks/e2e/compare_kv_tiering.py`: on a long-context
+  trace, cost_model offloads 8.9GB with growing PCIe backlog, KVJointPolicy cuts
+  offload to ~6MB (protects the KV pool) at a TPOT cost.
+- Design spec: `docs/superpowers/specs/2026-08-20-moesim-v8-design.md`.

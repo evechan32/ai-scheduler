@@ -131,3 +131,17 @@ APEX / Mooncake，见 `docs/research/2026-08-20-queue-overlap-heterogeneous-surv
 
 所有实现、设计决策、性能实测数据汇总在
 **`docs/PROJECT_SUMMARY.md`**（中文总文档）。
+
+
+## v8 交付（2026-08-20）
+
+KV cache 分层模拟 + KV-专家联合调度（用户需求：能够模拟 + 异构算力调度 + KV cache 下放）：
+
+- **KV 增长模拟** —— 每步 decode 分配 `kv_per_token_mb` 进 GPU KV 池；溢出
+  **自动下放主机**（走 PCIe 与专家 load 竞争，下放对调度的影响可见）。
+- **压力反馈** —— 每步 `kv_pressure` 快照进调度决策。
+- **`KVJointPolicy`** —— KV 高压时专家 CPU 化（省显存给 KV）、暂停预取、驱逐冷 KV；
+  低压时正常 EFT + 预取。
+- **基准** —— `benchmarks/e2e/compare_kv_tiering.py`：长上下文 trace 上
+  cost_model 下放 8.9GB（PCIe 排队累积），KVJointPolicy 下放降至 ~6MB（保护 KV 池）。
+- 设计规范：`docs/superpowers/specs/2026-08-20-moesim-v8-design.md`。
