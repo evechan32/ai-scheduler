@@ -143,6 +143,11 @@ class MoESimulation:
             self._state.kv_gpu_mb = capacity
             self._state.kv_host_mb += excess
             self._metrics.record_kv_offload(excess)
+            completion = self.pcie.reserve(self._clock, excess)
+            transfer_ms = self.pcie.transfer_time_ms(excess)
+            self._metrics.record_transfer_wait(
+                max(0.0, completion - transfer_ms - self._clock)
+            )
         if capacity > 0.0:
             self._state.kv_pressure = self._state.kv_gpu_mb / capacity
             self._metrics.record_kv_sample(

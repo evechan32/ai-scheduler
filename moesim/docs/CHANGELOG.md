@@ -105,3 +105,38 @@ All notable changes to moesim are recorded here. Format follows
 ### Tests
 
 - 116 passed, 2 skipped（新增 7 个混合精度测试）。
+
+## [v8] - 2026-08-20
+
+### Added — KV cache 分层模拟 + KV-专家联合调度
+
+- `scheduler/state.py`: KV 字段（kv_per_token_mb / kv_pressure / kv_evict_count / kv_fetch_count）。
+- `sim/moe_adapter.py`: **KV 增长模拟**（每步 token×kv_per_token 进 GPU 池）+ **超限自动下放
+  主机**（走 PCIe 占带宽、排队影响后续 load）+ 压力快照。
+- `sim/metrics.py`: kv_gpu/host 利用率、kv_offload_bytes。
+- `scheduler/policies/kv_joint.py`: **KVJointPolicy**（继承 v6 OverlapAwarePolicy）——
+  高压时专家 CPU 化（省显存给 KV）+ 暂停预取 + 驱逐冷 KV；低压时正常 EFT/预取。
+- `benchmarks/e2e/compare_kv_tiering.py`: 长上下文 KV 增长对比
+  cost_model / kv_aware(v2) / kv_joint(v8)。
+
+**实测**（长上下文 300 步，50MB/token，GPU KV 池 6GiB）：
+| 策略 | TPOT | kv_offload | 说明 |
+|---|---|---|---|
+| cost_model | 2.303ms | **8856MB** | 无视 KV 压力，显存挤压时大量下放 + PCIe 排队 |
+| kv_aware(v2) | 5.628ms | 0MB | 每步显式驱逐 100MB（按专家 size），PCIe 成本高 |
+| **kv_joint(v8)** | 5.359ms | **6MB** | 高压 CPU 化 + 驱逐，下放量降 99.9% |
+
+取舍：kv_joint 用 TPOT 代价换 KV 池保护（防止显存挤压）。
+
+- 依据：Mooncake（arXiv:2407.00079）、FlexGen（arXiv:2303.06865）、LMCache
+  （arXiv:2406.14403）。设计：`docs/superpowers/specs/2026-08-20-moesim-v8-design.md`。
+
+### Environment fix
+
+- vllm-build 环境 NCCL 修复：torch 2.13 依赖 nvidia-nccl-cu13（2.29.7），
+  libnccl.so.2 曾被 cu12 覆盖导致 `undefined symbol: ncclCommResume`——
+  强制重装 cu13 NCCL 恢复（`pip install --force-reinstall nvidia-nccl-cu13`）。
+
+### Tests
+
+- 127 passed, 2 skipped（新增 12 个 KV tiering/策略测试；INT4 环境性失败在 torch 2.13 再现）。
