@@ -1,6 +1,6 @@
 # moesim — 异构 MoE 调度框架完整文档
 
-> 项目状态：**v1-v7 全部完成** | 116/116 测试通过（2 skipped，vllm-build 环境） | PR #1/#2 已合并
+> 项目状态：**v1-v8 全部完成** | 127/127 测试通过（2 skipped，vllm-build 环境） | PR #1/#2 已合并
 > 本文档汇总全部实现、设计决策、性能实测数据与运行方式。
 
 ---
@@ -314,3 +314,25 @@ QuantMoE-Bench（arXiv:2406.08155，频率感知 bit 分配）、ktransformers I
 - CPU 利用率峰值 ~20%，系统内存利用率 ~38%
 - NCU（精确 sm__throughput / dram__throughput）在容器不可用（LibraryNotLoaded），
   以 dmon 驱动指标代理（见 `benchmarks/microbench/RESOURCE_PROFILING.md`）
+
+
+## 12. v8 增强（2026-08-20，KV 分层模拟 + 联合调度，127 测试）
+
+用户需求：**能够模拟 + 异构算力调度 + KV cache 下放**。
+
+| 模块 | 交付 |
+|---|---|
+| `scheduler/state.py` | KV 字段：kv_per_token_mb / kv_pressure / 驱逐计数 |
+| `sim/moe_adapter.py` | **KV 增长**（每步 token×kv_per_token）+ **超限自动下放主机**（走 PCIe 占带宽）+ 压力快照 |
+| `sim/metrics.py` | kv_gpu/host 利用率、kv_offload_bytes |
+| `scheduler/policies/kv_joint.py` | **KVJointPolicy**：高压 → 专家 CPU 化 + 暂停预取 + 驱逐冷 KV；低压 → v6 EFT/预取 |
+| `benchmarks/e2e/compare_kv_tiering.py` | 长上下文 KV 增长对比基准 |
+
+**实测**（300 步 × 50MB/token > 6GiB GPU KV 池）：cost_model 下放 8.9GB（PCIe 排队累积），
+kv_joint 下放仅 6MB（专家 CPU 化 + 驱逐保护 KV 池），代价是 TPOT 2.30→5.36ms。
+
+**模拟保真度修复**：KV 自然下放从"零成本记账"改为**走 PCIe 占带宽**（与专家 load 竞争，
+排队影响真实可见）——这是"KV cache 下放影响调度"的正确建模。
+
+**环境修复**：vllm-build 的 NCCL 被 cu12 覆盖导致 torch 加载失败（undefined symbol
+ncclCommResume），重装 cu13 NCCL 恢复。

@@ -1,6 +1,6 @@
 # moesim 开发记录与待实现清单
 
-> 更新：2026-08-20 | 测试：107/107 通过（3 skipped，1 INT4 环境性失败）| 分支：feat/moesim-v6-queue-overlap
+> 更新：2026-08-20 | 测试：127/127 通过（2 skipped，1 INT4 环境性失败）| 分支：feat/moesim-v6-queue-overlap
 > 本文档汇总全部开发历史、当前状态、待实现项，作为项目权威记录。
 
 ---
