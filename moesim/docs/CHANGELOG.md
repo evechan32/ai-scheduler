@@ -140,3 +140,32 @@ All notable changes to moesim are recorded here. Format follows
 ### Tests
 
 - 127 passed, 2 skipped（新增 12 个 KV tiering/策略测试；INT4 环境性失败在 torch 2.13 再现）。
+
+## [v9] - 2026-08-20
+
+### Added — 请求级并发模拟（DistServe 式时延分解）
+
+用户路线图第一项（"能够模拟"的最大缺口：单请求步模型 → 多请求并发）。
+
+- `sim/request_sim.py`: `Request`（arrival / prompt / output）+ `RequestSimulation`：
+  - **prefill**：GPU 计算块（prompt × prefill_per_token_ms），FIFO 排队（GPU 忙则等）
+  - **decode**：多请求轮询（round-robin）共享 GPU/CPU/PCIe，复用 v8 资源/状态机制
+  - **时延分解**：TTFT = prefill 排队 + prefill 执行；JCT = TTFT + decode；per-request stats
+  - KV 增长按每请求 token（prefill + decode）记账
+- `benchmarks/e2e/compare_request_concurrency.py`: 并发度对比基准。
+
+**实测**（8 请求，prompt 64 / output 32，2ms 到达间隔）：
+| gpu_slots | TTFT_avg | TPOT_avg | JCT_avg | prefill排队占比 | 吞吐 |
+|---|---|---|---|---|---|
+| 1 | 137ms | 14.56ms | 603ms | 76.6% | 361.6 tok/s |
+| 4 | 137ms | 10.51ms | 473ms | 76.6% | 442.7 tok/s |
+| 8 | 137ms | 10.49ms | 473ms | 76.6% | 443.1 tok/s |
+
+排队占 TTFT 76.6%（Kairos：排队是时延主成分）；GPU 并发 1→4 吞吐 +22%，4→8 饱和。
+
+- 依据：DistServe（OSDI'24）、Kairos（arXiv:2607.02043）、Vidur（MLSys'24）、
+  FastServe（MLSys'24）。设计：`docs/superpowers/specs/2026-08-20-moesim-v9-design.md`。
+
+### Tests
+
+- 133 passed, 2 skipped（新增 6 个请求级模拟测试；INT4 环境性失败仍为 torch 版本相关）。
