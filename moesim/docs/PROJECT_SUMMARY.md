@@ -1,6 +1,6 @@
 # moesim — 异构 MoE 调度框架完整文档
 
-> 项目状态：**v1-v8 全部完成** | 127/127 测试通过（2 skipped，vllm-build 环境） | PR #1/#2 已合并
+> 项目状态：**v1-v9 全部完成** | 133/133 测试通过（2 skipped，vllm-build 环境） | PR #1/#2 已合并
 > 本文档汇总全部实现、设计决策、性能实测数据与运行方式。
 
 ---
@@ -336,3 +336,17 @@ kv_joint 下放仅 6MB（专家 CPU 化 + 驱逐保护 KV 池），代价是 TPO
 
 **环境修复**：vllm-build 的 NCCL 被 cu12 覆盖导致 torch 加载失败（undefined symbol
 ncclCommResume），重装 cu13 NCCL 恢复。
+
+
+## 13. v9 增强（2026-08-20，请求级并发模拟，133 测试）
+
+路线图第一项：单请求步模型 → **多请求并发模拟**（"能够模拟"的完整闭环）。
+
+- `sim/request_sim.py`：`Request`（arrival/prompt/output）+ `RequestSimulation`
+  - prefill：GPU 计算块 + FIFO 排队；decode：多请求轮询共享 GPU/CPU/PCIe
+  - **DistServe 式时延分解**：TTFT = prefill 排队 + 执行；JCT；per-request stats
+  - KV 增长按每请求 token 记账（prefill + decode）
+- `benchmarks/e2e/compare_request_concurrency.py`：并发度对比
+
+**实测**（8 请求，prompt 64/output 32，2ms 间隔）：**prefill 排队占 TTFT 76.6%**
+（Kairos 论点：排队是时延主成分）；GPU 并发 1→4 吞吐 +22%（361→443 tok/s），4→8 饱和。

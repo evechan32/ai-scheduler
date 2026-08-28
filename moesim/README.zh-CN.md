@@ -145,3 +145,11 @@ KV cache 分层模拟 + KV-专家联合调度（用户需求：能够模拟 + �
 - **基准** —— `benchmarks/e2e/compare_kv_tiering.py`：长上下文 trace 上
   cost_model 下放 8.9GB（PCIe 排队累积），KVJointPolicy 下放降至 ~6MB（保护 KV 池）。
 - 设计规范：`docs/superpowers/specs/2026-08-20-moesim-v8-design.md`。
+
+
+## v9 交付（2026-08-20）
+
+请求级并发模拟（路线图第一项）：`sim/request_sim.py` —— `Request` + `RequestSimulation`
+（prefill GPU 计算块 + FIFO 排队；decode 多请求轮询共享资源；DistServe 式时延分解：
+TTFT = prefill 排队 + 执行）。实测 8 请求场景下 prefill 排队占 TTFT 76.6%，
+GPU 并发 1→4 吞吐 +22%。基准：`benchmarks/e2e/compare_request_concurrency.py`。

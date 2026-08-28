@@ -161,3 +161,13 @@ offloading, schedule heterogeneously with KV cache as a first-class resource"):
   trace, cost_model offloads 8.9GB with growing PCIe backlog, KVJointPolicy cuts
   offload to ~6MB (protects the KV pool) at a TPOT cost.
 - Design spec: `docs/superpowers/specs/2026-08-20-moesim-v8-design.md`.
+
+
+## v9 Deliverables (2026-08-20)
+
+Request-level concurrent simulation (roadmap #1): `sim/request_sim.py` — `Request`
++ `RequestSimulation` (prefill as a queued GPU block; decode round-robin across
+active requests sharing GPU/CPU/PCIe; DistServe-style latency breakdown:
+TTFT = prefill queuing + exec). Measured: prefill queuing = 76.6% of TTFT on the
+8-request demo; GPU concurrency 1→4 raises throughput +22%.
+Benchmark: `benchmarks/e2e/compare_request_concurrency.py`.
