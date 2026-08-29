@@ -4,7 +4,29 @@
 > 脚本：`benchmarks/e2e/benchmark_vllm.py`、`benchmark_llamacpp.py`、
 > `compare_request_concurrency.py`（硬件遥测见 `benchmarks/microbench/resource_monitor.py`）
 
-## 1. 实测数据
+## 1. 同一模型、同一输入的真实对比（llama.cpp CUDA，OLMoE-1B-7B Q3_K_L）
+
+> 2026-08-29 补测：用户指正此前对比混淆了模型/硬件。此为**同一 GGUF、同一 prompt**、
+> 纯 CPU / 层粒度异构 / 纯 GPU 三档真实数据（llama.cpp 0.3.35 CUDA 版，SM120 编译）。
+
+| 配置（n_gpu_layers） | 加载 | TPOT | 吞吐 | GPU util(mean/max) | GPU 显存 | CPU util |
+|---|---|---|---|---|---|---|
+| **纯 CPU**（0） | 5.0s | 40.88ms | 24.5 tok/s | 0.1% / 2% | 312 MiB | 36.5% |
+| 异构（8 层 GPU） | 1.0s | 24.21ms | 41.3 tok/s | 17.9% / 97% | 1866 MiB | 45.7% |
+| 异构（16 层 GPU） | 1.1s | 7.17ms | 139.6 tok/s | 46.1% / 74% | 5060 MiB | 32.7% |
+| **纯 GPU**（99） | 1.1s | 5.58ms | 179.1 tok/s | 67.9% / 86% | 6960 MiB | 8.1% |
+
+**结论（诚实版）**：
+1. 纯 GPU 比纯 CPU 快 **7.3x**，代价是 6960 MiB 显存（8G 的 85%）——模型再大（fp16
+   13G、Mixtral 8x22B 等）就放不下，纯 GPU 不可行。
+2. 异构是**显存-性能权衡曲线**：16 层 GPU 用 73% 显存达到 78% 纯 GPU 性能（139.6 vs
+   179.1）；8 层 GPU 用 27% 显存达到 23% 性能。
+3. 这是 llama.cpp 的**层粒度**异构（整层 GPU 或 CPU）。moesim 是**专家粒度**（每个
+   专家独立 CPU/GPU），在同样显存预算下能更精细地放置热专家——这是 moesim 相对
+   llama.cpp `-ngl` 的差异点，见 §2 模拟对比。
+
+数据源：`benchmarks/e2e/out/llamacpp_cpu_gpu_hybrid.json`；
+脚本：`benchmarks/e2e/compare_cpu_gpu_hybrid_llamacpp.py`。
 
 | 框架 | 模型 | 计算硬件 | 加载 | TPOT | 吞吐 | GPU util | CPU util | 内存占用 |
 |---|---|---|---|---|---|---|---|---|
