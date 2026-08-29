@@ -71,6 +71,8 @@ class RequestSimulation:
         )
         self._kv_host_capacity_mb = kv_host_capacity_mb
         self._metrics = Metrics()
+        self._req_kv_gpu: dict[int, float] = {}
+        self._req_kv_host: dict[int, float] = {}
 
     def _experts_for(self, req: Request, token_idx: int) -> list[str]:
         if self.expert_trace is not None:
@@ -89,7 +91,7 @@ class RequestSimulation:
             )
             queuing = max(0.0, start - req.arrival_ms)
             prefill_exec = completion - start
-            self._account_kv(req.prompt_tokens)
+            self._account_kv(req.prompt_tokens, req.req_id)
             prefill_done.append((completion, req))
             stats.append(RequestStats(
                 req_id=req.req_id, ttft_ms=completion - req.arrival_ms,
@@ -106,12 +108,13 @@ class RequestSimulation:
             for req in active:
                 idx = tokens_done.get(req.req_id, 0)
                 experts = self._experts_for(req, idx)
-                completion = self._decode_step(experts, self._clock)
+                completion = self._decode_step(experts, self._clock, req.req_id)
                 round_completions.append(completion)
                 tokens_done[req.req_id] = idx + 1
             self._clock = max(round_completions)
             for req in list(active):
                 if tokens_done.get(req.req_id, 0) >= req.output_tokens:
+                    self._release_kv(req.req_id)
                     active.remove(req)
         self._metrics.cache_hits = self._state.cache_hits
         self._metrics.cache_misses = self._state.cache_misses
@@ -124,13 +127,13 @@ class RequestSimulation:
             s.kv_offload_mb = self._metrics.kv_offload_bytes
         return stats
 
-    def _decode_step(self, experts: list[str], clock: float) -> float:
+    def _decode_step(self, experts: list[str], clock: float, req_id: int | None = None) -> float:
         state = self._state
         state.requested = tuple(experts)
         for eid in experts:
             state.mark_access(eid)
         self._prune_pending_loads()
-        self._account_kv(1)
+        self._account_kv(1, req_id)
         self._snapshot_feedback(experts)
         actions = self.scheduler.decide(state, clock)
         apply_actions(state, actions)
@@ -191,16 +194,21 @@ class RequestSimulation:
             eid: c for eid, c in self._state.pending_loads.items() if c > self._clock
         }
 
-    def _account_kv(self, token_count: int) -> None:
+    def _account_kv(self, token_count: int, req_id: int | None = None) -> None:
         kv_per_token = self._state.kv_per_token_mb
         if kv_per_token <= 0.0:
             return
-        self._state.kv_gpu_mb += token_count * kv_per_token
+        added = token_count * kv_per_token
+        self._state.kv_gpu_mb += added
+        if req_id is not None:
+            self._req_kv_gpu[req_id] = self._req_kv_gpu.get(req_id, 0.0) + added
         capacity = self._state.kv_gpu_capacity_mb
         if capacity > 0.0 and self._state.kv_gpu_mb > capacity:
             excess = self._state.kv_gpu_mb - capacity
             self._state.kv_gpu_mb = capacity
             self._state.kv_host_mb += excess
+            if req_id is not None:
+                self._req_kv_host[req_id] = self._req_kv_host.get(req_id, 0.0) + excess
             self._metrics.record_kv_offload(excess)
             completion = self.pcie.reserve(self._clock, excess)
             transfer_ms = self.pcie.transfer_time_ms(excess)
@@ -210,10 +218,17 @@ class RequestSimulation:
         if capacity > 0.0:
             self._state.kv_pressure = self._state.kv_gpu_mb / capacity
             self._metrics.record_kv_sample("gpu", self._state.kv_gpu_mb / capacity)
+            self._metrics.record_kv_peak(self._state.kv_gpu_mb)
             if self._kv_host_capacity_mb > 0.0:
                 self._metrics.record_kv_sample(
                     "host", min(1.0, self._state.kv_host_mb / self._kv_host_capacity_mb)
                 )
+
+    def _release_kv(self, req_id: int) -> None:
+        gpu = self._req_kv_gpu.pop(req_id, 0.0)
+        host = self._req_kv_host.pop(req_id, 0.0)
+        self._state.kv_gpu_mb = max(0.0, self._state.kv_gpu_mb - gpu)
+        self._state.kv_host_mb = max(0.0, self._state.kv_host_mb - host)
 
     def _snapshot_feedback(self, experts: list[str]) -> None:
         self._state.pcie_queue_len = self.pcie.queue_depth(self._clock)

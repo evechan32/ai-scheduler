@@ -9,7 +9,8 @@ def _profiles(n=4):
     return {f"e{i}": ExpertProfile(f"e{i}", 10.0, 1.0, 5.0) for i in range(n)}
 
 
-def _sim(gpu_concurrency=1, prefill_per_token_ms=0.5, kv_per_token_mb=0.0):
+def _sim(gpu_concurrency=1, prefill_per_token_ms=0.5, kv_per_token_mb=0.0,
+         kv_capacity=1000.0):
     pcie = BandwidthResource(bandwidth_gbps=10.0)
     return RequestSimulation(
         scheduler=LRUPolicy(),
@@ -20,7 +21,7 @@ def _sim(gpu_concurrency=1, prefill_per_token_ms=0.5, kv_per_token_mb=0.0):
         cpu=ComputeResource(concurrency=4, per_unit_ms=1.0),
         prefill_per_token_ms=prefill_per_token_ms,
         kv_per_token_mb=kv_per_token_mb,
-        kv_gpu_capacity_mb=1000.0,
+        kv_gpu_capacity_mb=kv_capacity,
     )
 
 
@@ -67,8 +68,24 @@ def test_latency_breakdown_components():
 def test_kv_grows_per_request_token():
     sim = _sim(kv_per_token_mb=1.0)
     sim.run([Request(0, 0.0, prompt_tokens=10, output_tokens=6)])
-    # prefill 10 + decode 6 tokens of KV
-    assert sim._state.kv_gpu_mb == 16.0
+    # prefill 10 + decode 6 tokens of KV; released on completion => 0 left
+    assert sim._state.kv_gpu_mb == 0.0
+
+
+def test_kv_released_on_request_completion():
+    sim = _sim(kv_per_token_mb=1.0, kv_capacity=100.0)
+    sim.run([Request(0, 0.0, prompt_tokens=2, output_tokens=2),
+             Request(1, 0.0, prompt_tokens=2, output_tokens=10)])
+    # req0 (4 tokens) finishes first and releases KV; req1 (12 tokens) finishes last
+    assert sim._state.kv_gpu_mb == 0.0
+
+
+def test_kv_peak_metric_tracks_lifetime():
+    sim = _sim(kv_per_token_mb=1.0, kv_capacity=100.0)
+    sim.run([Request(0, 0.0, prompt_tokens=2, output_tokens=2),
+             Request(1, 0.0, prompt_tokens=2, output_tokens=10)])
+    # req0 (4MB) finishes first and releases; req1 (12MB) dominates the peak
+    assert sim._metrics.kv_peak_mb == 12.0
 
 
 def test_deterministic_across_runs():

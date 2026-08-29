@@ -26,6 +26,7 @@ class Metrics:
     kv_gpu_utilization: dict[str, float] = field(default_factory=lambda: {"mean": 0.0, "max": 0.0, "p95": 0.0})
     kv_host_utilization: dict[str, float] = field(default_factory=lambda: {"mean": 0.0, "max": 0.0, "p95": 0.0})
     kv_offload_bytes: float = 0.0
+    kv_peak_mb: float = 0.0
     _kv_samples: dict[str, list[float]] = field(default_factory=dict)
     _queue_samples: dict[str, list[int]] = field(default_factory=dict)
     _utilization_samples: dict[str, list[float]] = field(default_factory=dict)
@@ -60,6 +61,9 @@ class Metrics:
 
     def record_kv_offload(self, mb: float) -> None:
         self.kv_offload_bytes += mb
+
+    def record_kv_peak(self, mb: float) -> None:
+        self.kv_peak_mb = max(self.kv_peak_mb, mb)
 
     def record_utilization(self, which: str, util: float) -> None:
         samples = self._utilization_samples.setdefault(which, [])

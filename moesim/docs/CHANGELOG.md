@@ -169,3 +169,28 @@ All notable changes to moesim are recorded here. Format follows
 ### Tests
 
 - 133 passed, 2 skipped（新增 6 个请求级模拟测试；INT4 环境性失败仍为 torch 版本相关）。
+
+## [v9.1] - 2026-08-29
+
+### Added — 请求级 KV 生命周期（参考 vLLM PagedAttention / Mooncake KV 管理）
+
+- `sim/request_sim.py`: KV 从池级"只增不减"改为**每请求记账 + 完成即释放**：
+  - `_req_kv_gpu` / `_req_kv_host` 追踪每请求的 KV 占用
+  - 请求 decode 完成时 `_release_kv` 归还 GPU/主机 KV（PagedAttention block 释放语义）
+  - prefill 与 decode 的 KV 都归属请求
+- `sim/metrics.py`: `kv_peak_mb` 峰值指标（体现释放后的真实峰值——短请求先完成，
+  峰值由长请求 KV 主导，而非所有请求总和）。
+- 依据：vLLM PagedAttention（arXiv:2309.06180，KV block 分配/释放）、
+  Mooncake（KV cache 生命周期管理）。
+
+### Added — 框架性能基准 + 硬件遥测
+
+- `benchmarks/e2e/benchmark_vllm.py` / `benchmark_llamacpp.py`: 真实框架推理基准
+  （TTFT/TPOT/吞吐 + GPU/CPU/内存遥测，经 resource_monitor）。
+- `docs/FRAMEWORK_BENCHMARK.md`: 实测对比表（vLLM 28 tok/s GPU / llama.cpp 13.1 tok/s
+  CPU / moesim 模拟专家层 1568 tok/s）。
+- `docs/vllm-runtime-environment-fixes.md`: vLLM 运行环境 6 个问题的根因+解决表格。
+
+### Tests
+
+- 135 passed, 2 skipped（新增 2 个 KV 生命周期测试；INT4 环境性失败仍在 torch 2.13）。
