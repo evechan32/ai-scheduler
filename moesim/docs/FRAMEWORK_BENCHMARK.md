@@ -104,3 +104,45 @@ GPU 0.076ms / CPU 0.639ms / PCIe 4.3GB/s，显存只够 16/64 专家）：
 **结论**：真实框架三档（llama.cpp）给出可信的显存-性能曲线；moesim 的贡献是
 **专家粒度调度**（比层粒度更细的放置自由度）+ **确定性模拟**（策略开发/复现环境），
 而非宣称绝对时延超越某框架。
+
+
+## 3. 真实框架接入现状与路径（2026-08-29 调研）
+
+### 3.1 真相：moesim 调度器目前未接入任何生产框架
+
+`executor/backends/vllm.py` 和 `llama_cpp.py` 都是**记账式 wrapper**——`load/unload`
+只改 `residency` dict，`execute_gpu` 转发 `engine.generate()` / `llama.eval()`，
+**不调用 moesim 的 `decide()`，也不控制框架内部的专家放置**。因此：
+
+- "llama.cpp + moesim 调度 vs llama.cpp baseline 是否有提升" —— **当前无法测，无数据**
+- "vllm vs vllm + moesim 异构调度" —— **同样无法测**
+
+唯一真接入是 transformers 的 `MoEForwardHook`，v3 实测**比 HF 原生慢**（29.47ms vs
+12.53ms GPU，因每层 `decide()` 调度开销）。所以 moesim 目前的真实价值是**确定性
+模拟器（策略开发/复现）+ 异构执行正确性验证**，而非"调度比框架 baseline 快"。
+
+### 3.2 接入路径调研结论（关键发现）
+
+**vLLM 有现成的、粒度可用的 offload 接口，是 moesim 接入的最短路径，且无需改
+vLLM 代码**（`vllm/config/offload.py`）：
+
+| vLLM 接口 | 粒度 | 对应 moesim 能力 |
+|---|---|---|
+| `uva.cpu_offload_params`（参数名段集合） | 按参数名段（如 `experts` / `experts.3`）指定 offload 哪些权重 | **专家放置的直接映射点**（decide 输出 → 参数段集合） |
+| `prefetch.offload_params` + `offload_group_size` + `offload_prefetch_step` | 层组 + 异步 H2D 预取 | **prefetch 重叠**（v6 的传输-计算重叠） |
+| `SimpleCPUOffloadScheduler`（`v1/simple_kv_offload/`） | KV block 级 LRU / lazy / async load | **KV 分层调度**（v8 的 GPU/主机 KV 分层 + 压力驱逐） |
+
+**本质限制**：vLLM offload 是**加载时静态**配置（非运行时逐专家动态）。moesim 的
+动态 `decide()` 不能直接映射，但 moesim 模拟器可以算出**最优静态放置计划**，映射成
+vLLM 配置参数——这仍优于 vLLM 默认的"非选择性 offload 直到 `cpu_offload_gb` 满"。
+
+**llama.cpp 接入更困难**：`--n-cpu-moe`（专家粒度 offload）底层走 `override_tensor`
+机制，但 llama-cpp-python 0.3.35 未暴露（仅 `n_gpu_layers`）。需改 C++ 或绑定。
+
+### 3.3 建议的第一个落地接入
+
+1. moesim 模拟器用 OLMoE 校准参数（GPU 0.076 / CPU 0.639 / PCIe 4.3GB/s），在 8G
+   显存约束下算出**最优静态专家放置计划**（哪些专家留 GPU、哪些 offload CPU）。
+2. 映射成 vLLM `cpu_offload_params`（专家参数名段）。
+3. 对比：vLLM 默认 offload（非选择性）vs vLLM + moesim 放置（按激活频率选冷专家）。
+4. 验证：同样显存预算下，moesim 放置的 TPOT/吞吐是否优于 vLLM 默认。
