@@ -72,3 +72,35 @@ python benchmarks/e2e/benchmark_llamacpp.py --max-tokens 64
 # 请求级并发对比（v9）
 python benchmarks/e2e/compare_request_concurrency.py
 ```
+
+
+## 2. moesim 在对比中的位置：专家粒度 vs llama.cpp 层粒度
+
+llama.cpp 的异构是**层粒度**（`-ngl`：整层 GPU 或 CPU），moesim 是**专家粒度**
+（每个专家独立 CPU/GPU 放置）。这是两者的本质差异：
+
+- **层粒度**：前 L 层的全部专家 GPU，后 16−L 层全部 CPU——无法区分层内冷热专家。
+- **专家粒度（moesim）**：按激活频率全局排序，热专家（跨层）进 GPU，冷专家 CPU。
+
+**模拟对比**（`benchmarks/e2e/compare_heterogeneous_effect.py`，OLMoE 校准参数
+GPU 0.076ms / CPU 0.639ms / PCIe 4.3GB/s，显存只够 16/64 专家）：
+
+| 放置 | TPOT | 吞吐 | 说明 |
+|---|---|---|---|
+| 纯 CPU（全专家 CPU） | 2.556ms | 391 tok/s | 可行但慢 |
+| 纯 GPU 上界（512MB） | 0.314ms | 3183 tok/s | 需全部权重进 GPU（放不下） |
+| naive LRU（128MB） | 4.805ms | 208 tok/s | miss 就 PCIe load，被带宽拖死 |
+| **cost_model 专家粒度（128MB）** | **0.530ms** | **1886 tok/s** | 热专家 GPU + 冷专家 CPU |
+
+**诚实边界**：
+1. moesim 模拟的是**专家层 only**（MoE FFN），llama.cpp 是**完整模型**（含 attention /
+   embedding），绝对 TPOT 不可直接对比（`verify_on_real_machine.md` 早已标注）。
+2. moesim 的 4.8x（vs 纯 CPU）本质是"用了 GPU"；真正体现**调度价值**的是
+   **LRU 4.805ms → cost_model 0.530ms = 9.1x**——两者都用 GPU，差别仅在
+   "冷专家走 CPU（0.639ms）而非 PCIe load（1.86ms）"这一 CPU 算力感知决策。
+3. 模拟参数中 GPU 0.076 / CPU 0.639 / PCIe 4.3 是**实测**（v1/v3 微基准）；
+   concurrency（GPU 8 路 / CPU 2 路）是**假设**，非实测。
+
+**结论**：真实框架三档（llama.cpp）给出可信的显存-性能曲线；moesim 的贡献是
+**专家粒度调度**（比层粒度更细的放置自由度）+ **确定性模拟**（策略开发/复现环境），
+而非宣称绝对时延超越某框架。
