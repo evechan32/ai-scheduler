@@ -194,3 +194,18 @@ All notable changes to moesim are recorded here. Format follows
 ### Tests
 
 - 135 passed, 2 skipped（新增 2 个 KV 生命周期测试；INT4 环境性失败仍在 torch 2.13）。
+
+## [2.0] - 2026-08-30
+
+### Added — 三层存储（VRAM/DRAM/disk）+ KV 磁盘层
+
+- `sim/resources.py`: `StorageTier` + `TieredStorage`（三层存储抽象，含层间搬移
+  时间——按源层带宽+延迟计，FlexGen 三层模型）。
+- `scheduler/state.py` + `sim/moe_adapter.py`: KV cache 三层——GPU 溢出到 DRAM、
+  DRAM 溢出到 disk（`kv_disk_mb` / `kv_host_capacity_mb` / `kv_disk_capacity_mb`）。
+- 依据：FlexGen（OSDI'23，GPU/CPU/disk 三层）、MoE-Infinity（SSD→DRAM→GPU 预取）。
+- 演示：`benchmarks/e2e/compare_kv_three_tier.py`（KV 随上下文逐层溢出到磁盘）。
+
+### Tests
+
+- 143 passed, 2 skipped（新增 12 个三层存储/KV 测试；INT4 环境性失败仍在 torch 2.13）。
