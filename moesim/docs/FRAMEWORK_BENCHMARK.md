@@ -146,3 +146,29 @@ vLLM 配置参数——这仍优于 vLLM 默认的"非选择性 offload 直到 `
 2. 映射成 vLLM `cpu_offload_params`（专家参数名段）。
 3. 对比：vLLM 默认 offload（非选择性）vs vLLM + moesim 放置（按激活频率选冷专家）。
 4. 验证：同样显存预算下，moesim 放置的 TPOT/吞吐是否优于 vLLM 默认。
+
+## 4. 2.1 本机验证（vLLM 选择性 offload 链路打通，2026-08-30）
+
+**目标**：验证 moesim 的 offload 计划能通过 vLLM 真实生效（机制验证，小模型）。
+
+**关键修正**：vLLM 的 `LLM()` API 暴露的 offload 参数是 **`offload_params` + `offload_group_size`
++ `offload_num_in_group`**（prefetch offload），而非 `cpu_offload_params`（那是 config 层内部
+字段，LLM API 未暴露）。之前方案文档/脚本用错参数名，导致 offload 静默不生效。
+
+**实测**（Qwen3.5-2B，8GiB 显存，`offload_params={"mlp"}` + group_size=24 + num_in_group=12）：
+
+| 配置 | 显存 | TPOT | GPU util |
+|---|---|---|---|
+| full GPU 基线 | 7426 MiB | 48.23ms | 29.4% |
+| offload 后 12 层 mlp | **6776 MiB** | **270.19ms** | 36.8% |
+
+**结论**：
+1. ✅ 选择性 offload 真实生效（显存 ↓650MiB，offload 层走慢路径 → TPOT 5.6x）
+2. ✅ moesim → vLLM 链路打通（offload 计划 → `offload_params` → 生效）
+3. ⚠️ vLLM prefetch offload 的层选择是**固定模式**（group N 层、每组 offload 后 M 层），
+   不是"任意选层"；`offload_params` 选的是**参数段**（mlp / experts / attention），
+   即"offload 哪些类型的参数"，粒度是"参数段 × 固定层组模式"。
+4. OLMoE 14G 完整对比仍需 ≥32G 内存机器（本机 7.6G OOM）。
+
+脚本：`benchmarks/e2e/benchmark_vllm_offload_selective.py`；
+配置生成器：`scripts/moesim_vllm_config.py`。

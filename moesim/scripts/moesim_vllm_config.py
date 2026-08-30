@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """moesim -> vLLM config generator (methods 1 + 2, no model patching).
 
-Method 1 (layer-granularity MoE offload): vLLM's `cpu_offload_params` matches
+Method 1 (layer-granularity MoE offload): vLLM's `offload_params` matches
 parameter-name segments (`f".{param}." in f".{name}."`), and MoE weights are
 named `layers.{i}.mlp.experts.w13_weight`. So segment `layers.{i}.experts`
 offloads that layer's whole MoE — the same granularity as llama.cpp --n-cpu-moe.
@@ -40,7 +40,7 @@ def build_plan(args) -> dict:
     keep_set = set(ranked[:keep_layers])
     offload_layers = [i for i in range(args.layers) if i not in keep_set]
 
-    cpu_offload_params = [f"layers.{i}.experts" for i in offload_layers]
+    offload_params = [f"layers.{i}.experts" for i in offload_layers]
 
     # Method 2: KV offload params. moesim v8 pressure threshold -> lazy offload
     # when GPU KV pool is under pressure; pool size from host budget.
@@ -58,7 +58,7 @@ def build_plan(args) -> dict:
         "gpu_budget_mb": args.gpu_budget_mb,
         "keep_layers": keep_layers,
         "offload_layers": offload_layers,
-        "cpu_offload_params": cpu_offload_params,
+        "offload_params": offload_params,
         "cpu_offload_gb": len(offload_layers) * layer_moe_mb / 1024.0,
         "kv_offload": kv,
     }
@@ -68,11 +68,11 @@ def build_plan(args) -> dict:
 def verify_segment_match(plan: dict) -> bool:
     """Unit-check: does `layers.{i}.experts` match vLLM's real parameter name
     `model.layers.{i}.mlp.experts.w13_weight` under dot-wrapped substring match?"""
-    for param in plan["cpu_offload_params"][:3]:
+    for param in plan["offload_params"][:3]:
         name = f"model.{param}.w13_weight"
         assert f".{param}." in f".{name}.", f"{param} should match {name}"
     # negative: must NOT match a different layer
-    p0 = plan["cpu_offload_params"][0]
+    p0 = plan["offload_params"][0]
     other = f"model.layers.99.experts.w13_weight"
     assert f".{p0}." not in f".{other}.", "must not match another layer"
     return True
@@ -97,12 +97,12 @@ def main() -> None:
     print(f"keep {plan['keep_layers']}/{args.layers} MoE layers on GPU, "
           f"offload {len(plan['offload_layers'])} layers "
           f"(cpu_offload_gb={plan['cpu_offload_gb']:.1f})")
-    print(f"cpu_offload_params sample: {plan['cpu_offload_params'][:4]} ...")
+    print(f"offload_params sample: {plan['offload_params'][:4]} ...")
     print(f"KV offload: lazy={plan['kv_offload']['lazy_offload']}, "
           f"host pool {plan['kv_offload']['host_kv_pool_mb']}MB")
     print(f"written: {args.out}")
     print("\nvLLM usage (on a >=32G-RAM machine):")
-    print("  LLM(model=..., cpu_offload_gb=..., cpu_offload_params=set(plan['cpu_offload_params']))")
+    print("  LLM(model=..., cpu_offload_gb=..., offload_params=set(plan['offload_params']))")
 
 
 if __name__ == "__main__":
