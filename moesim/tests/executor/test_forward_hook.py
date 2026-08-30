@@ -171,3 +171,33 @@ def test_cache_reuses_decisions():
     hook.uninstall(model)
     assert out.shape == (2, 8)
     assert counting.calls == 2, f"decide should be called once per layer, got {counting.calls}"
+
+
+def test_hook_demotes_disk_experts():
+    from moesim.scheduler.policies.disk_tier import DiskTierPolicy
+
+    torch.manual_seed(2)
+    model = _model()
+    x = torch.randn(2, 8)
+    # e1 cold (low freq) -> demoted to disk; e0 hot stays. cpu_exec is huge so
+    # cost_model routes to load (GPU) instead of execute_cpu, avoiding the
+    # Sequential-expert CPU path (unsupported) while still exercising demotion.
+    profiles = {"0": ExpertProfile("0", 1.0, 0.1, 100.0, activation_freq=0.9),
+                "1": ExpertProfile("1", 1.0, 0.1, 100.0, activation_freq=0.01)}
+    executor = TransformersMoEExecutor(model, device="cpu")
+    scheduler = DiskTierPolicy(pcie=BandwidthResource(bandwidth_gbps=1.0),
+                               prefetch_n=0, disk_budget_mb=1.0)
+    hook = MoEForwardHook(executor=executor, scheduler=scheduler, profiles=profiles,
+                          pcie=BandwidthResource(bandwidth_gbps=1.0), device="cpu")
+    hook.install(model)
+    model.model.layers[0].mlp(x)
+    hook.uninstall(model)
+    assert "1" in executor.disk_experts, "cold expert should be demoted to disk"
+    assert "0" not in executor.disk_experts
+
+
+def test_load_from_disk_removes_marker():
+    model = _model()
+    executor = TransformersMoEExecutor(model, device="cpu", disk_experts={"0"})
+    executor._load_from_disk("0")
+    assert "0" not in executor.disk_experts, "disk expert promoted on use"

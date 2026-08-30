@@ -77,6 +77,11 @@ class MoEForwardHook:
             cpu_experts = frozenset(
                 eid for a in actions if a.kind == "execute_cpu" for eid in a.expert_ids
             )
+            demoted = frozenset(
+                eid for a in actions if a.kind == "demote_to_disk" for eid in a.expert_ids
+            )
+            if demoted and self.executor is not None:
+                self.executor.disk_experts.update(demoted)
             if self._in_forward:
                 self.decision_cache[cache_key] = cpu_experts
 
@@ -142,6 +147,11 @@ class MoEForwardHook:
             cpu_experts = frozenset(
                 eid for a in actions if a.kind == "execute_cpu" for eid in a.expert_ids
             )
+            demoted = frozenset(
+                eid for a in actions if a.kind == "demote_to_disk" for eid in a.expert_ids
+            )
+            if demoted and self.executor is not None:
+                self.executor.disk_experts.update(demoted)
             if self._in_forward:
                 self.decision_cache[cache_key] = cpu_experts
 

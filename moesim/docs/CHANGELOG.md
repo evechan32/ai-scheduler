@@ -228,3 +228,28 @@ All notable changes to moesim are recorded here. Format follows
 ### Tests
 
 - 145 passed, 2 skipped。
+
+## [2.3] - 2026-08-30
+
+### Added — 运行时三层调度接入 transformers hook
+
+关键澄清：v3 的 `MoEForwardHook` 已经是**运行时逐专家调度**（decide 每层驱动
+CPU/GPU 分派）。2.3 的增量是把 2.0 的三层存储接入这个运行时，让调度从"两层
+（CPU/GPU）"升级为"三层（CPU/GPU/disk）"：
+
+- `executor/backends/transformers.py`: `TransformersMoEExecutor` 加磁盘层——
+  `disk_experts` 集合 + `_load_from_disk()`（磁盘专家激活时提升到 DRAM）。
+- `executor/backends/forward_hook.py`: decide 结果处理 `demote_to_disk` action，
+  冷专家标记到 executor 的磁盘层（三层运行时调度闭环）。
+- `scheduler/policies/disk_tier.py`: `DiskTierPolicy`（2.0）现在可直接驱动 hook。
+
+### 诚实边界
+
+- 磁盘层的真实实现（mmap 分页、SSD→DRAM→GPU 预取流水线）仍需大内存机器 + 超大
+  模型验证；本机（7.6G 内存）只能验证调度决策链路（decide → demote → disk 标记）。
+- hook 比 HF 原生慢（逐专家 Python 循环 + 调度开销）是已知的（v3 实测），"运行时
+  调度赢 baseline"需显存受限场景（纯 GPU 放不下时逐专家 offload 是必须的）。
+
+### Tests
+
+- 150 passed, 2 skipped（新增 forward-hook 磁盘层链路测试；INT4 环境性失败仍在 torch 2.13）。
