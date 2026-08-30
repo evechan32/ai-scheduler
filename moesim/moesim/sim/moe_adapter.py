@@ -20,6 +20,7 @@ class MoESimulation:
         kv_per_token_mb: float = 0.0,
         kv_gpu_capacity_mb: float = 0.0,
         kv_host_capacity_mb: float = 0.0,
+        kv_disk_capacity_mb: float = 0.0,
     ) -> None:
         self.scheduler = scheduler
         self.profiles = profiles
@@ -31,8 +32,11 @@ class MoESimulation:
             profiles=profiles, resident=set(), gpu_capacity_mb=gpu_capacity_mb,
             kv_per_token_mb=kv_per_token_mb,
             kv_gpu_capacity_mb=kv_gpu_capacity_mb,
+            kv_host_capacity_mb=kv_host_capacity_mb,
+            kv_disk_capacity_mb=kv_disk_capacity_mb,
         )
         self._kv_host_capacity_mb = kv_host_capacity_mb
+        self._kv_disk_capacity_mb = kv_disk_capacity_mb
         self._metrics = Metrics()
 
     def feed(self, step_experts: list[str], token_count: int = 1) -> None:
@@ -137,10 +141,11 @@ class MoESimulation:
         if kv_per_token <= 0.0:
             return
         self._state.kv_gpu_mb += token_count * kv_per_token
-        capacity = self._state.kv_gpu_capacity_mb
-        if capacity > 0.0 and self._state.kv_gpu_mb > capacity:
-            excess = self._state.kv_gpu_mb - capacity
-            self._state.kv_gpu_mb = capacity
+
+        gpu_capacity = self._state.kv_gpu_capacity_mb
+        if gpu_capacity > 0.0 and self._state.kv_gpu_mb > gpu_capacity:
+            excess = self._state.kv_gpu_mb - gpu_capacity
+            self._state.kv_gpu_mb = gpu_capacity
             self._state.kv_host_mb += excess
             self._metrics.record_kv_offload(excess)
             completion = self.pcie.reserve(self._clock, excess)
@@ -148,14 +153,23 @@ class MoESimulation:
             self._metrics.record_transfer_wait(
                 max(0.0, completion - transfer_ms - self._clock)
             )
-        if capacity > 0.0:
-            self._state.kv_pressure = self._state.kv_gpu_mb / capacity
-            self._metrics.record_kv_sample(
-                "gpu", self._state.kv_gpu_mb / capacity
-            )
+
+        host_capacity = self._state.kv_host_capacity_mb
+        if host_capacity > 0.0 and self._state.kv_host_mb > host_capacity:
+            disk_excess = self._state.kv_host_mb - host_capacity
+            self._state.kv_host_mb = host_capacity
+            self._state.kv_disk_mb += disk_excess
+
+        if gpu_capacity > 0.0:
+            self._state.kv_pressure = self._state.kv_gpu_mb / gpu_capacity
+            self._metrics.record_kv_sample("gpu", self._state.kv_gpu_mb / gpu_capacity)
             if self._kv_host_capacity_mb > 0.0:
                 self._metrics.record_kv_sample(
                     "host", min(1.0, self._state.kv_host_mb / self._kv_host_capacity_mb)
+                )
+            if self._kv_disk_capacity_mb > 0.0:
+                self._metrics.record_kv_sample(
+                    "disk", min(1.0, self._state.kv_disk_mb / self._kv_disk_capacity_mb)
                 )
 
     def _snapshot_feedback(self, experts: list[str]) -> None:

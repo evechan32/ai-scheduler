@@ -32,6 +32,9 @@ class ScheduleState:
     kv_pressure: float = 0.0
     kv_evict_count: int = 0
     kv_fetch_count: int = 0
+    kv_disk_mb: float = 0.0
+    kv_host_capacity_mb: float = 0.0
+    kv_disk_capacity_mb: float = 0.0
     gpu_queue_len: int = 0
     cpu_queue_len: int = 0
     residency_benefit: dict[str, float] = field(default_factory=dict)

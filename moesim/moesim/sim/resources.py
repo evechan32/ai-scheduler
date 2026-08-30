@@ -126,6 +126,64 @@ class StorageResource:
         self.used_mb -= size_mb
 
 
+@dataclass
+class StorageTier:
+    """One level of a tiered storage hierarchy (VRAM / DRAM / disk)."""
+
+    name: str
+    capacity_mb: float
+    bandwidth_gbps: float
+    latency_ms: float = 0.0
+    used_mb: float = 0.0
+
+    def fits(self, size_mb: float) -> bool:
+        return self.used_mb + size_mb <= self.capacity_mb + 1e-9
+
+
+class TieredStorage:
+    """Layered storage with tier-to-tier transfer cost (FlexGen 3-tier model).
+
+    Tier indices: 0 = fastest/smallest (VRAM), higher = slower/larger (DRAM, disk).
+    """
+
+    def __init__(self, tiers: list[StorageTier]) -> None:
+        self.tiers = tiers
+
+    def fits(self, idx: int, size_mb: float) -> bool:
+        return self.tiers[idx].fits(size_mb)
+
+    def insert(self, idx: int, size_mb: float) -> None:
+        if not self.fits(idx, size_mb):
+            raise ValueError(
+                f"tier {self.tiers[idx].name} capacity exceeded: "
+                f"{self.tiers[idx].used_mb}+{size_mb}>{self.tiers[idx].capacity_mb}"
+            )
+        self.tiers[idx].used_mb += size_mb
+
+    def remove(self, idx: int, size_mb: float) -> None:
+        if size_mb > self.tiers[idx].used_mb + 1e-9:
+            raise ValueError(f"cannot remove {size_mb}MB from tier {idx}")
+        self.tiers[idx].used_mb -= size_mb
+
+    def transfer_time_ms(self, src_idx: int, dst_idx: int, size_mb: float) -> float:
+        """Time to move data from src tier to dst tier.
+
+        Uses the source tier's read bandwidth + latency (a slow source dominates).
+        """
+        tier = self.tiers[src_idx]
+        return size_mb / tier.bandwidth_gbps + tier.latency_ms
+
+    def promote(self, src_idx: int, dst_idx: int, size_mb: float) -> None:
+        assert src_idx > dst_idx, "promote moves data toward faster (lower-index) tiers"
+        self.remove(src_idx, size_mb)
+        self.insert(dst_idx, size_mb)
+
+    def demote(self, src_idx: int, dst_idx: int, size_mb: float) -> None:
+        assert src_idx < dst_idx, "demote moves data toward slower (higher-index) tiers"
+        self.remove(src_idx, size_mb)
+        self.insert(dst_idx, size_mb)
+
+
 class MultiGPUCluster:
     """Multiple GPU nodes with a pairwise bandwidth matrix (GB/s)."""
 
