@@ -1,7 +1,22 @@
-# moesim 调度集成 vLLM 解决方案（模型改造脚本）
+# moesim 调度集成 vLLM 解决方案
 
-> 2026-08-30 | 目标：把 moesim 的调度决策（哪些专家放 CPU/GPU）通过**改造模型的脚本**
-> 真正喂给 vLLM 的 CPU offload 机制。
+> **更新（2026-08-30）**：经进一步调研，**首选路径改为"不改模型"的方法 1+2**
+> （逐层 MoE offload + KV offload，脚本 `scripts/moesim_vllm_config.py` 已跑通）。
+> 本文档原"改模型拆专家"方案降级为进阶方法（方法 4，逐专家粒度，见 §2-4）。
+
+## 0. 首选：不改模型的 vLLM 原生适配（方法 1+2）
+
+- **方法 1 — 逐层 MoE offload**：`cpu_offload_params = {"layers.{i}.experts"}`。
+  vLLM 的段匹配（`.param.` in `.name.`）支持逐层 MoE offload（等价 llama.cpp
+  `--n-cpu-moe`）。moesim 按**层重要性**（早期层更敏感，QuantMoE-Bench "+FirstL"）
+  选冷层 offload，优于 vLLM 默认"非选择性 offload 直到 gb 满"。**不改模型。**
+- **方法 2 — KV offload**：moesim v8 的 KV 分层调度（压力阈值/驱逐）映射 vLLM
+  `SimpleCPUOffloadScheduler`（lazy/eager 模式 + 池大小）。**vLLM 现成。**
+- 脚本：`scripts/moesim_vllm_config.py`（生成 cpu_offload_params + KV 参数）。
+
+---
+
+## 1. 进阶：核心洞察（为什么逐专家需要改模型）
 
 ## 1. 核心洞察（为什么需要改模型）
 
