@@ -21,6 +21,8 @@ class MoESimulation:
         kv_gpu_capacity_mb: float = 0.0,
         kv_host_capacity_mb: float = 0.0,
         kv_disk_capacity_mb: float = 0.0,
+        disk_read_gbps: float = 2.0,
+        disk_latency_ms: float = 5.0,
     ) -> None:
         self.scheduler = scheduler
         self.profiles = profiles
@@ -34,6 +36,8 @@ class MoESimulation:
             kv_gpu_capacity_mb=kv_gpu_capacity_mb,
             kv_host_capacity_mb=kv_host_capacity_mb,
             kv_disk_capacity_mb=kv_disk_capacity_mb,
+            disk_read_gbps=disk_read_gbps,
+            disk_latency_ms=disk_latency_ms,
         )
         self._kv_host_capacity_mb = kv_host_capacity_mb
         self._kv_disk_capacity_mb = kv_disk_capacity_mb
@@ -104,10 +108,12 @@ class MoESimulation:
         for eid in cpu_ids:
             if self.cpu is None:
                 raise RuntimeError("execute_cpu requested but no CPU resource configured")
+            start = self._clock
+            if eid in self._state.disk_experts:
+                size = self.profiles[eid].size_mb
+                start += size / self._state.disk_read_gbps + self._state.disk_latency_ms
             completions.append(
-                self.cpu.schedule(
-                    self._clock, self.profiles[eid].quantized_cpu_exec_ms()
-                )
+                self.cpu.schedule(start, self.profiles[eid].quantized_cpu_exec_ms())
             )
 
         # KV evict/fetch transfers run over PCIe concurrently with expert loads.

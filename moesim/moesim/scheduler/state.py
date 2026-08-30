@@ -35,6 +35,9 @@ class ScheduleState:
     kv_disk_mb: float = 0.0
     kv_host_capacity_mb: float = 0.0
     kv_disk_capacity_mb: float = 0.0
+    disk_experts: set[str] = field(default_factory=set)
+    disk_read_gbps: float = 2.0
+    disk_latency_ms: float = 5.0
     gpu_queue_len: int = 0
     cpu_queue_len: int = 0
     residency_benefit: dict[str, float] = field(default_factory=dict)

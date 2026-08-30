@@ -209,3 +209,22 @@ All notable changes to moesim are recorded here. Format follows
 ### Tests
 
 - 143 passed, 2 skipped（新增 12 个三层存储/KV 测试；INT4 环境性失败仍在 torch 2.13）。
+
+### Added — 专家权重磁盘层（2.0 补全）
+
+- `scheduler/base.py`: 新增 `demote_to_disk` Action（专家从 DRAM 降到 SSD）。
+- `scheduler/state.py` + `sim/moe_adapter.py`: `disk_experts` 集合 + `disk_read_gbps` /
+  `disk_latency_ms`——磁盘专家 CPU 执行前先 SSD 读（慢路径）。
+- `scheduler/policies/disk_tier.py`: `DiskTierPolicy`——按 activation_freq 把最冷专家
+  降级到磁盘（disk_budget_mb 控制）。
+- 演示：`benchmarks/e2e/compare_expert_disk_tier.py`（冷专家降磁盘的慢读权衡）。
+
+### 诚实边界
+
+- 专家磁盘层的"省 DRAM"价值目前是策略驱动的（降冷专家），**尚未加 DRAM 容量约束**
+  （专家权重总量 vs DRAM 容量的硬约束）——完整的三层"超大模型能跑"需此约束，列为 2.0 后续。
+- KV 三层已含容量约束（GPU→DRAM→disk 逐层溢出），专家三层待对齐。
+
+### Tests
+
+- 145 passed, 2 skipped。

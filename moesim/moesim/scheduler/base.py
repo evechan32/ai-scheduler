@@ -5,7 +5,7 @@ from dataclasses import dataclass
 
 from moesim.scheduler.state import ScheduleState
 
-_VALID_KINDS = {"load", "unload", "execute_gpu", "execute_cpu", "evict_kv", "fetch_kv", "prefetch"}
+_VALID_KINDS = {"load", "unload", "execute_gpu", "execute_cpu", "evict_kv", "fetch_kv", "prefetch", "demote_to_disk"}
 
 
 @dataclass(frozen=True)
@@ -52,6 +52,10 @@ def apply_actions(state: ScheduleState, actions: list[Action]) -> None:
                 fetch = min(size, state.kv_host_mb)
                 state.kv_host_mb -= fetch
                 state.kv_gpu_mb += fetch
+    for action in actions:
+        if action.kind == "demote_to_disk":
+            for eid in action.expert_ids:
+                state.disk_experts.add(eid)
     # execute_gpu/execute_cpu are informational at the state layer
 
 
