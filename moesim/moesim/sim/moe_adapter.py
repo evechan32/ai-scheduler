@@ -93,6 +93,10 @@ class MoESimulation:
             if action.kind == "prefetch":
                 for eid in action.expert_ids:
                     self._book_transfer(eid, critical=False)
+        for action in actions:
+            if action.kind == "prefetch_from_disk":
+                for eid in action.expert_ids:
+                    self._prefetch_from_disk(eid)
 
         completions: list[float] = []
         # GPU executions start at load completion (or now if already resident).
@@ -229,3 +233,16 @@ class MoESimulation:
         transfer_ms = self.pcie.transfer_time_ms(self.profiles[eid].size_mb)
         self._metrics.record_transfer(transfer_ms)
         return completion
+
+    def _prefetch_from_disk(self, eid: str) -> None:
+        """Background disk->DRAM read for a predicted expert (MoE-Infinity).
+
+        Runs off the step critical path (overlapped with compute); once done,
+        the expert is promoted out of the disk tier so its later activation no
+        longer pays the slow SSD read.
+        """
+        size = self.profiles[eid].size_mb
+        read_ms = size / self._state.disk_read_gbps + self._state.disk_latency_ms
+        self._metrics.record_hidden_transfer(read_ms)
+        self._metrics.record_transfer(read_ms)
+        self._state.disk_experts.discard(eid)

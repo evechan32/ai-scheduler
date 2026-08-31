@@ -253,3 +253,21 @@ CPU/GPU 分派）。2.3 的增量是把 2.0 的三层存储接入这个运行时
 ### Tests
 
 - 150 passed, 2 skipped（新增 forward-hook 磁盘层链路测试；INT4 环境性失败仍在 torch 2.13）。
+
+## [2.0-complete] - 2026-08-30
+
+### Added — DRAM 容量约束 + 磁盘预取流水线
+
+- `scheduler/policies/disk_tier.py`: `DiskTierPolicy` 加 `dram_capacity_mb`（DRAM
+  容量硬约束——非 resident 专家总量超 DRAM 时，最冷专家强制降磁盘）和
+  `prefetch_disk_n`（预测式磁盘预取——最热的磁盘专家提前 SSD→DRAM）。
+- `scheduler/base.py`: 新增 `prefetch_from_disk` Action。
+- `sim/moe_adapter.py`: `_prefetch_from_disk()`——后台 SSD→DRAM 读（不进关键路径），
+  完成后专家提升出磁盘层（后续激活不再付慢读）。
+
+至此 2.0 完整：三层存储（VRAM/DRAM/disk）+ KV 三层 + 专家三层 + DRAM 约束 + 磁盘预取，
+对应 FlexGen（三层存储）+ MoE-Infinity（SSD→DRAM→GPU 预测预取）的完整图景。
+
+### Tests
+
+- 153 passed, 2 skipped。
