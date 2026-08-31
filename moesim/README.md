@@ -122,3 +122,52 @@ RL policies, multi-GPU topology.
 
 Remaining: real vLLM kernel-level integration, production RL training loop,
 multi-GPU real-machine verification, INT4 kernel optimization.
+
+## v6 Deliverables (2026-08-20)
+
+Queueing- and overlap-aware scheduling, grounded in heterogeneous-compute
+research (HEFT, MoE-Infinity, KTransformers, APEX, Mooncake; see
+`docs/research/2026-08-20-queue-overlap-heterogeneous-survey.md`):
+
+- **Queueing-aware resources** — `BandwidthResource` / `ComputeResource` expose
+  `queue_depth()`, `utilization()`, and peek `wait_time_ms()`; the simulator
+  feeds queue depth / utilization / wait snapshots to the scheduler each step.
+- **`OverlapAwarePolicy`** — HEFT-style earliest-finish-time placement
+  (`EFT = queue wait + execution`, CPU contention included) plus bandwidth-gated
+  prefetch: transfers for predicted next-step experts run in the background,
+  overlapped with compute, and never sit on the step critical path. A `prefetch`
+  Action and cross-step `pending_loads` tracking prevent double-booking PCIe.
+- **Queueing & overlap metrics** — queue depth, PCIe/GPU/CPU utilization,
+  hidden transfer time, and overlap ratio.
+- **Benchmark** — `benchmarks/e2e/compare_queue_overlap.py`: on a hot-expert
+  trace, prefetch overlap cuts TPOT 2.368ms vs 4.800ms for an all-CPU placement
+  (50.7% faster) and beats LRU (2.475ms); the prefetch gate limits background
+  traffic when PCIe is congested.
+- **Docs** — v6 design spec, TDD plan, research survey, CHANGELOG.
+
+
+## v8 Deliverables (2026-08-20)
+
+KV cache tiering simulation + KV-joint scheduling (user request: "simulate KV
+offloading, schedule heterogeneously with KV cache as a first-class resource"):
+
+- **KV growth simulation** — every decode step allocates `kv_per_token_mb` into
+  the GPU KV pool; overflow is **auto-offloaded to host memory over PCIe**
+  (contending with expert loads, so KV offload impact on scheduling is visible).
+- **Pressure feedback** — `kv_pressure` snapshot per step feeds the scheduler.
+- **`KVJointPolicy`** — under high KV pressure: experts go CPU (saves VRAM for
+  KV), prefetch pauses, cold KV evicted; low pressure: normal EFT + prefetch.
+- **Benchmark** — `benchmarks/e2e/compare_kv_tiering.py`: on a long-context
+  trace, cost_model offloads 8.9GB with growing PCIe backlog, KVJointPolicy cuts
+  offload to ~6MB (protects the KV pool) at a TPOT cost.
+- Design spec: `docs/superpowers/specs/2026-08-20-moesim-v8-design.md`.
+
+
+## v9 Deliverables (2026-08-20)
+
+Request-level concurrent simulation (roadmap #1): `sim/request_sim.py` — `Request`
++ `RequestSimulation` (prefill as a queued GPU block; decode round-robin across
+active requests sharing GPU/CPU/PCIe; DistServe-style latency breakdown:
+TTFT = prefill queuing + exec). Measured: prefill queuing = 76.6% of TTFT on the
+8-request demo; GPU concurrency 1→4 raises throughput +22%.
+Benchmark: `benchmarks/e2e/compare_request_concurrency.py`.

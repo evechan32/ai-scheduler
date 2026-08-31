@@ -1,6 +1,6 @@
 # moesim — 异构 MoE 调度框架完整文档
 
-> 项目状态：**v1 + v2 + v3 全部完成** | 71/71 测试通过 | PR #1/#2 已合并至 main
+> 项目状态：**v1-v9 全部完成** | 133/133 测试通过（2 skipped，vllm-build 环境） | PR #1/#2 已合并
 > 本文档汇总全部实现、设计决策、性能实测数据与运行方式。
 
 ---
@@ -20,7 +20,9 @@
 │  调度层 scheduler/  (numpy-only)                           │
 │    decide(state, clock) -> [Action]                        │
 │    策略: cost_model / activation_freq / lru / kv_aware / rl│
-│    状态: ScheduleState (residency, KV tier, per-GPU)       │
+│          / residency / overlap(EFT+prefetch)               │
+│    状态: ScheduleState (residency, KV tier, per-GPU,       │
+│          队列/利用率反馈, pending_loads)                    │
 ├────────────────────────────────────────────────────────────┤
 │  模拟层 sim/  (numpy-only, 领域无关)                       │
 │    core (DES) / resources (带宽/算力/存储/多GPU)           │
@@ -167,6 +169,8 @@ python benchmarks/microbench/measure_expert_time.py
 | `docs/superpowers/plans/2026-08-15-moesim-v2.md` | v2 实施计划（Task 16-24） |
 | `docs/superpowers/plans/2026-08-15-moesim-v3.md` | v3 实施计划（Task 25-29） |
 | `benchmarks/e2e/verify_on_real_machine.md` | 真机验证协议（含硬件限制与实测记录） |
+| `docs/research/2026-08-20-queue-overlap-heterogeneous-survey.md` | v6 排队/重叠调研综述（论文 + 高星项目，arXiv 已核实） |
+| `docs/research/2026-08-20-paper-implementation-trace.md` | **论文-实现追踪**（机制 → 代码落点 → 参考程度 → 简化点） |
 
 ## 7. 关键设计决策记录
 
@@ -185,3 +189,164 @@ python benchmarks/microbench/measure_expert_time.py
 - 多 GPU 真机验证（当前仅模拟层）
 - INT4 kernel 优化（当前为精度优先反量化路径）
 - 调度决策开销优化（决策缓存/批量调度，缩小与 HF 原生的差距）
+
+## 9. v4 增强（2026-08-16，75 测试）
+
+| 提交 | 内容 |
+|---|---|
+| e3787a1 | 决策缓存——单 forward 内 decide 复用（减少调度开销） |
+| eae3955 | **真并行执行**——线程池并发 CPU/GPU 专家（混合 22.12ms，全 GPU 21.85ms） |
+| 9aa3e0c | 一键安装脚本 install.sh + pyproject extras + 中文 README |
+| 529a472 | MoE 推理优化论文综述（docs/research/，50+ 篇） |
+| 3e10c1a | REINFORCE 策略梯度调度器（生产级 RL，替代 Q-learning） |
+| d61a835 | INT4 kernel 真 int8 gemm（torch._int_mm，含 CPU/CUDA 回退） |
+
+**v4 性能实测（统一小模型，30 次平均）：**
+- 混合串行 23.89ms → 混合真并行 **22.12ms**
+- 全 GPU 串行 34.84ms → 全 GPU 真并行 **21.85ms**
+- INT4 gemm 相对误差 <10%（含激活 int8 量化 + 权重解包）
+
+**v4 优化方向依据**（论文综述映射）：APEX 异步并行、Dovetail CPU/GPU 投机分工、QuantMoE-Bench 量化、TriMoE 三路异构。
+
+## 10. v6 增强（2026-08-20，排队与重叠感知调度，107 测试）
+
+针对用户要求的四个方向：**排队影响 / CPU 资源影响 / 通算并行 / 重叠性**。
+
+| 模块 | 交付 |
+|---|---|
+| `sim/resources.py` | 队列可见性：`queue_depth()` / `utilization()` / `wait_time_ms()`（peek 不污染状态） |
+| `sim/metrics.py` | 队列深度均值/最大、PCIe/GPU/CPU 利用率、transfer_wait、hidden_transfer、prefetch_count、overlap_ratio |
+| `scheduler/base.py` | 新增 `prefetch` Action |
+| `scheduler/state.py` | 资源反馈字段：pcie_queue_len、利用率、等待时间估计、pending_loads（在途传输表） |
+| `scheduler/policies/overlap.py` | **OverlapAwarePolicy**：HEFT 式 EFT 放置（排队+CPU 影响入决策）+ 带宽门控预取 |
+| `sim/moe_adapter.py` | prefetch 与计算重叠（不进关键路径）；在途传输跨步复用；执行等待在途完成 |
+| `scheduler/policies/residency.py` | 修复：load 容量检查缺失（超容量回退 CPU） |
+| `benchmarks/e2e/compare_queue_overlap.py` | 排队/重叠对比基准 |
+
+**v6 模拟实测（热专家 trace，200 步，100MB 专家，PCIe 8GB/s）：**
+
+| 策略 | TPOT | 吞吐 | 命中率 | overlap | 说明 |
+|---|---|---|---|---|---|
+| lru | 2.475ms | 404.0 tok/s | 0.980 | 0.0 | 基线 |
+| cost_model | 2.455ms | 407.3 tok/s | 0.998 | 0.0 | |
+| residency | 4.800ms | 208.3 tok/s | 0.000 | 0.0 | 全部 CPU（12.5ms load > 4ms CPU） |
+| **overlap(pf=2)** | **2.368ms** | **422.4 tok/s** | 0.945 | **1.0** | 🏆 预取重叠 |
+
+**结论**：预取重叠把热专家在后台搬进 GPU，执行从 CPU（4ms）迁到 GPU（1ms），
+比全 CPU 放置快 **50.7%**；PCIe 拥塞（2GB/s）时预取门控（队列深度/利用率阈值）
+限制后台流量，仍优于不预取（3.95 vs 4.80ms）。
+
+**v6 设计依据**（`docs/research/2026-08-20-queue-overlap-heterogeneous-survey.md`）：
+Kairos（排队占 P95 TTFT 77-98%）、HEFT（EFT 决策范式）、Mooncake（排队感知调度）、
+KTransformers（异步 CPU-GPU 任务 + Expert Deferral）、APEX（重叠机制）、
+MoE-Infinity（激活感知预取 + 带宽串行化）、llama.cpp（CPU offload V 曲线）。
+
+## 10. 模型量化进 GPU（2026-08-16）
+
+### 为什么模型原本进不了 GPU
+- OLMoE-1B-7B safetensors 是 **fp32 权重 26G**，fp16 加载仍需 ~13G
+- 本机 GPU 仅 **8G（RTX 5070 Laptop）**，RAM 仅 7.6G
+- 之前实测：26G fp32 读取 → 加载超时/OOM（swap thrash）
+
+### 量化方案（已验证 ✅）
+- **bitsandbytes NF4 4-bit 量化**：`load_in_4bit=True + device_map='auto'`
+- 权重压缩至 ~4G，**成功放入 GPU**：显存 6510 MiB（8G 的 80%）
+- 真实模型 GPU 推理：**362.8ms / forward**（5 token 前向）
+- 加载耗时 304s（读 26G fp32 + 量化转换）
+
+### 性能对比（OLMoE-1B-7B）
+| 路径 | 性能 |
+|---|---|
+| llama.cpp CPU（Q3_K_L GGUF）| 28 tok/s（短上下文）|
+| **transformers + NF4 4-bit GPU** | **362.8ms/forward**（真实模型进 GPU）|
+
+### 意义
+真实模型（64 专家 MoE）终于能在本机 GPU 上运行——结合 MoEForwardHook，
+现在可以实测 CPU+GPU 混合执行对**真实量化模型**的性能（此前只能用结构等价小模型）。
+
+## 11. vLLM 框架测试记录（2026-08-16）
+
+### 测试目标
+用 vLLM 加载 OLMoE-1B-7B 做框架对比（vs llama.cpp / transformers / moesim hook）。
+
+### 遇到的限制（如实记录）
+1. **vLLM 0.13 预编译 wheel 不支持 SM 12.0**（RTX 5070 消费级 Blackwell）：
+   `No supported CUDA architectures found for major versions [12]` —— 官方 wheel 只含数据中心 Blackwell kernel，消费级 RTX 50 系列需从源码编译（vLLM PR #38412 确认）。
+2. **bitsandbytes 量化路径形状不兼容**：OLMoE 的 NF4 展平权重 `(1048576,1) != (2048,1024)`，vLLM 0.13 不支持。
+3. **transformers 4.57 GGUF 转换器不支持 olmoe 架构**（GGUF_SUPPORTED_ARCHITECTURES 无 olmoe）。
+4. **源码编译受阻于 GitHub 网络**：vLLM 构建需从 GitHub 克隆多个依赖（cutlass/triton/flash-attention/ComputeLibrary/oneDNN），本机 github.com:443 持续超时。CUTLASS 已用 `VLLM_CUTLASS_SRC_DIR` 官方变量绕过（flashinfer 自带 4.5.0），但 triton 等后续依赖同样卡克隆。
+
+### 最终框架对比（本机可测的）
+| 框架 | 加载方式 | 性能 |
+|---|---|---|
+| llama.cpp | Q3_K_L GGUF, CPU | 28 tok/s（短上下文） |
+| transformers | NF4 4-bit bitsandbytes, GPU | 362.8ms/forward（真实模型进 GPU） |
+| moesim hook | 混合执行（小模型验证） | 22.12ms/forward，误差 0.062% |
+| vLLM | ❌ SM12 + GitHub 克隆双重限制 | 待代理后重试 |
+
+### 复测所需（待用户执行）
+从源码编译 vLLM 需先克隆到本机（绕过 GitHub 443）：
+- nvidia/cutlass v4.4.2（CUTLASS，flashinfer 4.5.0 可替代）
+- triton-lang/triton（triton_kernels）
+- vllm-project/flash-attention
+- ARM-software/ComputeLibrary（仅 ARM 构建需要）
+- oneapi-src/oneDNN（仅 x86 可选）
+
+
+## 11. v7 增强（2026-08-20，混合精度放置 + 真机资源监控，116 测试）
+
+| 模块 | 交付 |
+|---|---|
+| `scheduler/cost_model.py` | `ExpertProfile` 量化变体字段（q_size_mb / q_cpu_exec_ms，默认 None 兼容） |
+| `scheduler/policies/overlap.py` | CPU EFT 用量化执行时间（量化 CPU 更快 → 更多专家放 CPU） |
+| `sim/moe_adapter.py` | execute_cpu 用量化时间；prefetch 用量化尺寸（低精度预取） |
+| `benchmarks/microbench/resource_monitor.py` | 零依赖真机资源监控（gpu_util / sm_active 代理 / DRAM bw-util 代理 / CPU / 内存 / NCU 可选） |
+| `benchmarks/microbench/profile_resource_usage.py` | compute-bound + bandwidth-bound 实测并落盘 JSON |
+
+**依据**：HOBBIT（arXiv:2411.01433，gating 分数决定精度 + 低精度预取）、
+QuantMoE-Bench（arXiv:2406.08155，频率感知 bit 分配）、ktransformers INT4 CPU gemm。
+全谱系综述：`docs/research/2026-08-20-heterogeneous-compute-spectrum-survey.md`。
+
+**真机实测（RTX 5070 Laptop 8GiB，torch 2.11）：**
+- DRAM 带宽 **315–323 GB/s（r+w）= 理论 448 GB/s 的 ~70–72%**
+- compute-bound matmul：GPU util / sm_active 峰值 100%，DRAM bw-util 仅 ~3–9%
+  （计算密集特征）
+- CPU 利用率峰值 ~20%，系统内存利用率 ~38%
+- NCU（精确 sm__throughput / dram__throughput）在容器不可用（LibraryNotLoaded），
+  以 dmon 驱动指标代理（见 `benchmarks/microbench/RESOURCE_PROFILING.md`）
+
+
+## 12. v8 增强（2026-08-20，KV 分层模拟 + 联合调度，127 测试）
+
+用户需求：**能够模拟 + 异构算力调度 + KV cache 下放**。
+
+| 模块 | 交付 |
+|---|---|
+| `scheduler/state.py` | KV 字段：kv_per_token_mb / kv_pressure / 驱逐计数 |
+| `sim/moe_adapter.py` | **KV 增长**（每步 token×kv_per_token）+ **超限自动下放主机**（走 PCIe 占带宽）+ 压力快照 |
+| `sim/metrics.py` | kv_gpu/host 利用率、kv_offload_bytes |
+| `scheduler/policies/kv_joint.py` | **KVJointPolicy**：高压 → 专家 CPU 化 + 暂停预取 + 驱逐冷 KV；低压 → v6 EFT/预取 |
+| `benchmarks/e2e/compare_kv_tiering.py` | 长上下文 KV 增长对比基准 |
+
+**实测**（300 步 × 50MB/token > 6GiB GPU KV 池）：cost_model 下放 8.9GB（PCIe 排队累积），
+kv_joint 下放仅 6MB（专家 CPU 化 + 驱逐保护 KV 池），代价是 TPOT 2.30→5.36ms。
+
+**模拟保真度修复**：KV 自然下放从"零成本记账"改为**走 PCIe 占带宽**（与专家 load 竞争，
+排队影响真实可见）——这是"KV cache 下放影响调度"的正确建模。
+
+**环境修复**：vllm-build 的 NCCL 被 cu12 覆盖导致 torch 加载失败（undefined symbol
+ncclCommResume），重装 cu13 NCCL 恢复。
+
+
+## 13. v9 增强（2026-08-20，请求级并发模拟，133 测试）
+
+路线图第一项：单请求步模型 → **多请求并发模拟**（"能够模拟"的完整闭环）。
+
+- `sim/request_sim.py`：`Request`（arrival/prompt/output）+ `RequestSimulation`
+  - prefill：GPU 计算块 + FIFO 排队；decode：多请求轮询共享 GPU/CPU/PCIe
+  - **DistServe 式时延分解**：TTFT = prefill 排队 + 执行；JCT；per-request stats
+  - KV 增长按每请求 token 记账（prefill + decode）
+- `benchmarks/e2e/compare_request_concurrency.py`：并发度对比
+
+**实测**（8 请求，prompt 64/output 32，2ms 间隔）：**prefill 排队占 TTFT 76.6%**
+（Kairos 论点：排队是时延主成分）；GPU 并发 1→4 吞吐 +22%（361→443 tok/s），4→8 饱和。

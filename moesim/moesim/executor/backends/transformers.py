@@ -15,11 +15,13 @@ class TransformersMoEExecutor(ExpertExecutor):
     weights on CPU via the moesim CPU kernel.
     """
 
-    def __init__(self, model, device: str = "cuda", use_accelerate: bool = False) -> None:
+    def __init__(self, model, device: str = "cuda", use_accelerate: bool = False,
+                 disk_experts: set[str] | None = None) -> None:
         self.model = model
         self.device = device
         self.residency: dict[str, str] = {}
         self.uses_accelerate = use_accelerate
+        self.disk_experts: set[str] = disk_experts or set()
         if use_accelerate:
             try:
                 import accelerate  # noqa: F401
@@ -31,6 +33,15 @@ class TransformersMoEExecutor(ExpertExecutor):
 
     def _expert_module(self, expert_id: str):
         return self.model.experts[int(expert_id)]
+
+    def _load_from_disk(self, expert_id: str) -> None:
+        """Promote a disk-resident expert to host DRAM.
+
+        Real implementation maps the expert's weight file (mmap) so its pages
+        page in on first access; here we just drop the disk marker — the page-in
+        cost is modelled by the simulator, not re-measured at runtime.
+        """
+        self.disk_experts.discard(expert_id)
 
     def _to(self, module, target: str) -> None:
         if self.uses_accelerate:
@@ -59,6 +70,8 @@ class TransformersMoEExecutor(ExpertExecutor):
         return self._expert_module(expert_id)(hidden_states.to(self.device))
 
     def execute_cpu(self, expert_id: str, hidden_states) -> object:
+        if expert_id in self.disk_experts:
+            self._load_from_disk(expert_id)
         module = self._expert_module(expert_id)
         if self.residency.get(expert_id) != "cpu":
             self.unload([expert_id])
