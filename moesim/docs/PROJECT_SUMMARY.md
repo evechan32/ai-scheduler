@@ -350,3 +350,51 @@ ncclCommResume），重装 cu13 NCCL 恢复。
 
 **实测**（8 请求，prompt 64/output 32，2ms 间隔）：**prefill 排队占 TTFT 76.6%**
 （Kairos 论点：排队是时延主成分）；GPU 并发 1→4 吞吐 +22%（361→443 tok/s），4→8 饱和。
+
+## 14. 第二步：异构算力 + 异构存储调度器 + 框架适配（2026-08-30，153 测试）
+
+用户两步愿景（见 `docs/VISION_AND_ROADMAP.md`）：第一步模拟可行性（v1-v9，完成）；
+第二步做"异构算力 + 异构存储都利用上的调度器，适配框架"。
+
+### 2.0 — 三层存储（VRAM / DRAM / disk）✅
+
+| 组件 | 内容 | 依据 |
+|---|---|---|
+| `TieredStorage` | 三层存储抽象（容量+带宽+延迟，层间搬移按源层成本） | FlexGen |
+| KV cache 三层 | GPU→DRAM→disk 逐层溢出（容量约束） | Mooncake |
+| 专家权重磁盘层 | `demote_to_disk` + `disk_experts` + SSD 慢读成本 | MoE-Infinity |
+| DRAM 容量约束 | `dram_capacity_mb`：专家总量超 DRAM 时冷专家强制降磁盘 | FlexGen |
+| 磁盘预取流水线 | `prefetch_from_disk` + `prefetch_disk_n`：预测热磁盘专家后台 SSD→DRAM | MoE-Infinity |
+| `DiskTierPolicy` | 按激活频率三层放置（热 GPU / 温 DRAM / 冷 disk） | PowerInfer |
+
+### 2.1 — vLLM 静态放置（本机验证）✅
+
+- 发现 vLLM 暴露的 offload 参数是 `offload_params` + `offload_group_size`（prefetch
+  offload），而非 config 层的 `cpu_offload_params`。
+- 本机验证（Qwen3.5-2B）：选择性 offload 真实生效——`offload_params={"mlp"}` +
+  group_size=24 → 显存 7426→6776MiB（offload 12 层 mlp）。
+- 脚本：`scripts/moesim_vllm_config.py`（生成 offload 计划）。
+
+### 2.3 — 运行时三层调度接入 + 真实推理验证 ✅
+
+- 澄清：v3 的 `MoEForwardHook` 已是运行时逐专家调度（decide 每层驱动 CPU/GPU 分派）。
+  2.3 增量 = 把 2.0 的三层存储接入这个运行时（`demote_to_disk` → executor 磁盘层）。
+- **真实推理验证**（`benchmark_strategy_runtime.py`，CUDA 真实 forward）：
+
+| 策略 | ms/forward |
+|---|---|
+| all-CPU | 139.688 |
+| all-GPU | 49.616 |
+| cost_model | 47.226 |
+| **disk_tier** | **47.103** |
+
+  **混合调度比 all-CPU 快 2.96x，比 all-GPU 快 5%** —— moesim 调度决策在真实推理里
+  有效的直接证据。
+
+### 诚实边界（第二步未闭环项）
+
+1. "混合 > all-GPU" 的完整优势需超大模型（>8G 显存）+ ≥32G 内存机器验证；本机
+   （8G 显存 + 7.6G 内存）只能验证到小模型 + 调度链路正确性。
+2. transformers 5.x 的 Olmoe 结构已变（`OlmoeExperts` 无 len），v3 hook 需适配
+   新结构——真实 transformers 5.x Olmoe 是后续项。
+3. 磁盘层的真实实现（mmap 分页）仍需超大模型验证。
