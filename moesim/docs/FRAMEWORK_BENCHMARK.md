@@ -172,3 +172,26 @@ vLLM 配置参数——这仍优于 vLLM 默认的"非选择性 offload 直到 `
 
 脚本：`benchmarks/e2e/benchmark_vllm_offload_selective.py`；
 配置生成器：`scripts/moesim_vllm_config.py`。
+
+## 5. fused vs 逐专家实测（拆专家的代价，2026-08-30）
+
+`benchmarks/e2e/benchmark_moe_fused_vs_perexpert.py`：同一 MoE 结构（8 专家 × 512
+hidden × 1024 intermediate，64 tokens），对比两种执行方式：
+
+| 方法 | ms/forward |
+|---|---|
+| fused（堆叠权重 + 一次大 GEMM） | 0.1471 |
+| per-expert（Python 循环 + 多次小 GEMM） | 0.7410 |
+
+**fused 比逐专家快 5.0x。**
+
+**结论（诚实）**：
+1. 逐专家调度（moesim hook 的方式）比 vLLM 的 fused 堆叠 GEMM 慢 **5 倍**——这是
+   "拆专家换取逐专家放置自由度"的真实代价。
+2. 这个代价**只有在显存受限场景才值得**：当模型放不下显存（all-GPU fused 会 OOM），
+   逐专家 offload 是唯一解，5x 的慢（相对理想 fused）换来了"能跑"。
+3. 这解释了 v3 实测"hook 比 HF 原生慢"的根本原因，也划定了 moesim 的定位边界：
+   **moesim 的价值不是"逐专家比 fused 快"，而是"显存受限时逐专家是唯一可行的解"**。
+
+注：此 fused 是 torch 大 GEMM + einsum（非 vLLM 最优 Triton/CUTLASS kernel），
+真实 vLLM fused kernel 更快，故 5x 是拆专家代价的**下界**。
