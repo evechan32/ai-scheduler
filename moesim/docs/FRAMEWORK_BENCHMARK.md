@@ -195,3 +195,31 @@ hidden × 1024 intermediate，64 tokens），对比两种执行方式：
 
 注：此 fused 是 torch 大 GEMM + einsum（非 vLLM 最优 Triton/CUTLASS kernel），
 真实 vLLM fused kernel 更快，故 5x 是拆专家代价的**下界**。
+
+## 6. 改 vLLM 做逐专家 offload（方案 + 进展 + 阻塞，2026-08-30）
+
+### 关键发现：w13_weight 已是逐专家（3D 第一维）
+
+vLLM 的 `w13_weight` 形状是 `[num_experts, 2*intermediate, hidden]`，**第一维就是
+专家索引**（`unquantized_fused_moe_method.py` 确认）。所以逐专家 offload 技术上可行：
+冷专家的 `[i]` 切片 offload 到 CPU（UVA），热专家切片留 GPU。
+
+### 改动（vLLM 仓库，`vllm/model_executor/offloader/uva.py`，实验性）
+
+- `UVAOffloader.__init__` 加 `cpu_offload_expert_ids: set[int]`（冷专家集合）。
+- `_maybe_offload_to_cpu` 加"先收集后应用"的切片 offload：识别 3D 专家权重
+  （w13_weight/w2_weight），冷专家切片 → CPU pinned + UVA view，注册为
+  `{name}_cold_experts` + `{name}_cold_expert_ids`，热专家留 GPU。
+
+### 阻塞：本机 WSL 不支持 UVA
+
+`is_uva_available()` 在本机（WSL）返回 **False**，UVA 切片 offload 无法验证。
+非 UVA 路径（functional_call on-demand 搬移）是后续。**完整验证需非 WSL 的
+Linux + CUDA 机器（UVA 可用）。**
+
+### 诚实结论
+
+- 逐专家 offload ≠ 逐专家执行：offload 保留 fused kernel 执行（快），只有执行
+  （hook 方式）才慢 5x（§5 实测）。
+- 逐专家 offload 的剩余工作：①非 UVA 路径 ②fused kernel 的热/冷权重组合访问
+  （kernel 层，大工程）③非 WSL 机器验证。
