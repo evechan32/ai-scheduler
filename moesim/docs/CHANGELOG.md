@@ -253,3 +253,50 @@ CPU/GPU 分派）。2.3 的增量是把 2.0 的三层存储接入这个运行时
 ### Tests
 
 - 150 passed, 2 skipped（新增 forward-hook 磁盘层链路测试；INT4 环境性失败仍在 torch 2.13）。
+
+## [2.0-complete] - 2026-08-30
+
+### Added — DRAM 容量约束 + 磁盘预取流水线
+
+- `scheduler/policies/disk_tier.py`: `DiskTierPolicy` 加 `dram_capacity_mb`（DRAM
+  容量硬约束——非 resident 专家总量超 DRAM 时，最冷专家强制降磁盘）和
+  `prefetch_disk_n`（预测式磁盘预取——最热的磁盘专家提前 SSD→DRAM）。
+- `scheduler/base.py`: 新增 `prefetch_from_disk` Action。
+- `sim/moe_adapter.py`: `_prefetch_from_disk()`——后台 SSD→DRAM 读（不进关键路径），
+  完成后专家提升出磁盘层（后续激活不再付慢读）。
+
+至此 2.0 完整：三层存储（VRAM/DRAM/disk）+ KV 三层 + 专家三层 + DRAM 约束 + 磁盘预取，
+对应 FlexGen（三层存储）+ MoE-Infinity（SSD→DRAM→GPU 预测预取）的完整图景。
+
+### Tests
+
+- 153 passed, 2 skipped。
+
+## [2.3-complete] - 2026-08-30
+
+### 验证 — 调度决策在真实推理里的价值（非模拟）
+
+`benchmarks/e2e/benchmark_strategy_runtime.py`：用 MoEForwardHook 驱动 4 层 × 8 专家
+MoE 模型（CUDA 真实 forward），对比不同调度策略的真实执行时间：
+
+| 策略 | ms/forward |
+|---|---|
+| all-CPU | 139.688 |
+| all-GPU | 49.616 |
+| cost_model（CPU 算力感知） | 47.226 |
+| **disk_tier（三层调度）** | **47.103** |
+
+**结论**：
+1. 混合调度（cost_model/disk_tier）比 all-CPU 快 **2.96x**——这是 moesim 调度决策
+   在真实推理里有效性的直接证据（CPU 算力感知把冷专家放 CPU/磁盘，热专家 GPU）。
+2. 混合调度比 all-GPU 快 5%（小模型边际优势；真正的价值场景是模型 > 显存时 all-GPU
+   不可行，此时逐专家 offload 是唯一解）。
+
+**诚实边界**：验证用 4 层小模型（非 OLMoE 完整），模型可全放 GPU；"混合 > all-GPU"
+的完整优势需超大模型（>8G 显存）在大内存机器验证。
+
+### 兼容性记录
+
+- transformers 5.x 的 Olmoe 结构已变（`OlmoeExperts` 无 len、`OlmoeTopKRouter`），
+  v3 hook 的 `_forward_3d` 假设旧结构——本验证改用 hook 支持的 w1/w2 专家结构，
+  真实 transformers 5.x Olmoe 适配列为后续。

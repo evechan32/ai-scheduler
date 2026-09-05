@@ -5,7 +5,7 @@ from dataclasses import dataclass
 
 from moesim.scheduler.state import ScheduleState
 
-_VALID_KINDS = {"load", "unload", "execute_gpu", "execute_cpu", "evict_kv", "fetch_kv", "prefetch", "demote_to_disk"}
+_VALID_KINDS = {"load", "unload", "execute_gpu", "execute_cpu", "evict_kv", "fetch_kv", "prefetch", "demote_to_disk", "prefetch_from_disk"}
 
 
 @dataclass(frozen=True)
